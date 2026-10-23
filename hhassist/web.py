@@ -29,6 +29,7 @@ textarea{width:100%;min-height:420px;padding:12px;border:1px solid #d0d7de;borde
 .actions{display:flex;gap:10px;margin:12px 0}
 .card{background:#fff;border:1px solid #e3e6ea;border-radius:8px;padding:16px;margin-bottom:14px}
 .reasons{font-size:12.5px;color:#5a6472}
+textarea.queries-text{min-height:140px}
 """
 
 
@@ -139,6 +140,7 @@ def render_index(conn, threshold, limit, msg="", area="", region=""):
             st["vacancies"], st["scored"], st["letters"], st["applications"], st["replied"],
             st["sent_today"], left, esc(llm.describe(get_settings()))),
         "<div class='actions'>%s</div>" % actions,
+        _queries_block(),
     ]
     if msg:
         parts.append("<div class='card'>%s</div>" % esc(msg))
@@ -271,16 +273,79 @@ def apply_status(conn, vacancy_id, kind, note=""):
     return "статус: %s" % storage.KIND_TITLES[code]
 
 
-def _queries():
-    """Поисковые запросы: config/queries.txt (ручное переопределение) или из профиля-резюме."""
-    path = os.path.join(BASE, "config", "queries.txt")
+QUERIES_HEADER = ("# Поисковые запросы для сбора вакансий "
+                  "(по одному в строке, строки с # игнорируются)")
+
+
+def _queries_path():
+    return os.path.join(BASE, "config", "queries.txt")
+
+
+def split_queries(text):
+    """Действующие запросы из текста: без пустых строк, без # (даже с отступом), без повторов."""
+    out = []
+    for line in (text or "").replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        item = line.strip()
+        if not item or item.startswith("#") or item in out:
+            continue
+        out.append(item)
+    return out
+
+
+def queries_text():
+    """Текст редактора и источник: содержимое config/queries.txt или список из профиля."""
+    path = _queries_path()
     if os.path.isfile(path):
         with open(path, encoding="utf-8") as f:
-            items = [line.strip() for line in f if line.strip() and not line.startswith("#")]
+            return f.read(), "config/queries.txt"
+    from . import matching
+    items = matching.build_queries(get_settings().profile)
+    return QUERIES_HEADER + "\n" + "\n".join(items) + "\n", \
+        "профиль (файла config/queries.txt ещё нет)"
+
+
+def save_queries(text):
+    """Сохраняет редактор в config/queries.txt (CRLF, UTF-8). Возвращает отчёт."""
+    items = split_queries(text)
+    if not items:
+        return "не сохранено: ни одного запроса (пустые строки и строки с # не считаются)"
+    body = (text or "").replace("\r\n", "\n").replace("\r", "\n").strip("\n")
+    path = _queries_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="\r\n") as f:
+        f.write(body + "\n")
+    return "запросы сохранены: %d (config/queries.txt)" % len(items)
+
+
+def _queries():
+    """Поисковые запросы: config/queries.txt (ручное переопределение) или из профиля-резюме."""
+    path = _queries_path()
+    if os.path.isfile(path):
+        with open(path, encoding="utf-8") as f:
+            items = split_queries(f.read())
         if items:
             return items
     from . import matching
     return matching.build_queries(get_settings().profile)
+
+
+def _queries_block():
+    """Редактор поисковых запросов на главной: правится руками и сразу влияет на сбор."""
+    s = get_settings()
+    text, source = queries_text()
+    items = split_queries(text)
+    note = "действующих запросов: <b>%d</b> · источник: %s" % (len(items), esc(source))
+    if s.collect_queries > 0:
+        note += (" · <b>внимание:</b> сбор берёт только первые %d (COLLECT_QUERIES=%d)"
+                 % (min(s.collect_queries, len(items)), s.collect_queries))
+    return (
+        "<div class='card'><div class='meta'><b>Поисковые запросы для сбора</b> — "
+        "по одному в строке, строки с # игнорируются</div>"
+        "<form method='post' action='/queries'>"
+        "<textarea class='queries-text' name='queries'>%s</textarea>"
+        "<div class='actions'><button class='btn primary' type='submit'>"
+        "Сохранить запросы</button><span class='meta'>%s</span></div></form></div>"
+        % (esc(text), note))
 
 
 def run_action(kind, conn, limit=None, area=None):
@@ -485,6 +550,12 @@ class Handler(BaseHTTPRequestHandler):
                     msg = "пустой текст не сохранён"
                 self._redirect("/v/%s?msg=%s" % (urllib.parse.quote(vacancy_id),
                                                  urllib.parse.quote(msg)))
+            elif path == "/queries":
+                text = (self._form().get("queries") or [""])[0]
+                report = save_queries(text)
+                storage.log_event(conn, "queries_edit",
+                                  {"queries": split_queries(text), "from": "web"})
+                self._redirect("/?msg=" + urllib.parse.quote(report))
             elif path.startswith("/run/"):
                 kind = path.split("/")[2]
                 form = self._form()

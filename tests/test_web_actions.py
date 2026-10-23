@@ -171,6 +171,75 @@ class CollectSettingsTest(unittest.TestCase):
         self.assertEqual((s.collect_limit, s.collect_pages, s.collect_queries), (20, 1, 0))
 
 
+class QueriesEditorTest(WebBase):
+    """Редактор поисковых запросов на главной: пишет config/queries.txt и влияет на сбор."""
+
+    def setUp(self):
+        super().setUp()
+        os.makedirs(os.path.join(self.tmp.name, "config"))
+        patcher = mock.patch.object(web, "BASE", self.tmp.name)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.path = os.path.join(self.tmp.name, "config", "queries.txt")
+
+    def test_split_skips_blanks_comments_and_duplicates(self):
+        text = ("# шапка\n\nAI инженер\n  промпт-инженер  \n"
+                "   # комментарий с отступом\nAI инженер\n")
+        self.assertEqual(web.split_queries(text), ["AI инженер", "промпт-инженер"])
+
+    def test_save_writes_file_as_crlf_and_reports_count(self):
+        report = web.save_queries("# мои должности\nAI инженер\nRAG разработчик\n")
+        self.assertEqual(report, "запросы сохранены: 2 (config/queries.txt)")
+        with open(self.path, "rb") as f:
+            raw = f.read()
+        self.assertIn("AI инженер".encode("utf-8"), raw)
+        self.assertIn(b"\r\n", raw)
+        self.assertNotIn(b"\r\r\n", raw)
+        with open(self.path, encoding="utf-8") as f:
+            self.assertIn("# мои должности", f.read())
+
+    def test_empty_input_does_not_overwrite_file(self):
+        web.save_queries("AI инженер\n")
+        report = web.save_queries("# только комментарий\n\n   \n")
+        self.assertIn("не сохранено", report)
+        self.assertEqual(web._queries(), ["AI инженер"])
+
+    def test_saved_queries_are_used_by_collect(self):
+        web.save_queries("AI инженер\nAI агенты разработчик\n")
+        self.assertEqual(web._queries(), ["AI инженер", "AI агенты разработчик"])
+        calls = []
+
+        def fake_collect(query, **kwargs):
+            calls.append(query)
+            return [sample_vacancy(id="q1")], {"source": "html", "fallback": False,
+                                               "reason": "", "found": 1, "taken": 1,
+                                               "errors": []}
+
+        with mock.patch.object(collector, "collect", fake_collect):
+            web.run_action("collect", self.conn)
+        self.assertEqual(calls, ["AI инженер", "AI агенты разработчик"])
+
+    def test_index_shows_editor_with_current_queries(self):
+        web.save_queries("AI инженер\nLLM инженер\n")
+        page = web.render_index(self.conn, 0, 50)
+        self.assertIn("name='queries'", page)
+        self.assertIn("AI инженер", page)
+        self.assertIn("LLM инженер", page)
+        self.assertIn("Сохранить запросы", page)
+        self.assertIn("действующих запросов: <b>2</b>", page)
+
+    def test_index_warns_about_collect_queries_limit(self):
+        web.save_queries("AI инженер\nLLM инженер\nRAG разработчик\n")
+        self.use_settings(offline_settings(collect_queries=2))
+        page = web.render_index(self.conn, 0, 50)
+        self.assertIn("сбор берёт только первые 2", page)
+
+    def test_index_falls_back_to_profile_without_file(self):
+        page = web.render_index(self.conn, 0, 50)
+        self.assertIn("профиль (файла config/queries.txt ещё нет)", page)
+        self.assertIn("RAG-разработчик", page)  # целевая роль из DEFAULT_PROFILE
+
+
 class StatusActionTest(WebBase):
     """Карточка вакансии: статусы отклика и страница «Воронка»."""
 
