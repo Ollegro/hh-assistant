@@ -5,7 +5,7 @@ import os
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import jobs, llm, queue, storage
+from . import analytics, jobs, llm, queue, storage
 from .config import BASE, get_settings
 
 CSS = """
@@ -69,13 +69,14 @@ def render_index(conn, threshold, limit, msg=""):
         "<form method='post' action='/run/letters' style='display:inline'>"
         "<button class='btn' type='submit'>Сгенерировать письма</button></form>"
         "<a class='btn' href='/export'>Экспорт писем в файлы</a>"
+        "<a class='btn' href='/funnel'>Воронка и ответы</a>"
     )
     parts = [
         "<html><head><meta charset='utf-8'><title>hh-assistant</title><style>%s</style></head><body>" % CSS,
         "<header><b>hh-assistant</b><span>вакансий: %d · оценено: %d · писем: %d · откликов: %d · "
-        "сегодня: %d · остаток лимита: %d</span><span>%s</span></header><main>" % (
-            st["vacancies"], st["scored"], st["letters"], st["applications"], st["sent_today"], left,
-            esc(llm.describe(get_settings()))),
+        "ответов: %d · сегодня: %d · остаток лимита: %d</span><span>%s</span></header><main>" % (
+            st["vacancies"], st["scored"], st["letters"], st["applications"], st["replied"],
+            st["sent_today"], left, esc(llm.describe(get_settings()))),
         "<div class='actions'>%s</div>" % actions,
     ]
     if msg:
@@ -94,6 +95,96 @@ def render_index(conn, threshold, limit, msg=""):
                      "<code>python cli.py collect</code>, затем <code>score</code> и <code>letters</code>.</td></tr>")
     parts.append("</table></main></body></html>")
     return "".join(parts)
+
+
+def _breakdown_table(title, rows):
+    """Таблица разреза аналитики: группа, оценено, отправлено, ответов, доля."""
+    parts = ["<div class='card'><div class='meta'><b>%s</b></div><table>"
+             "<tr><th>Группа</th><th>Оценено</th><th>Отправлено</th><th>Ответов</th>"
+             "<th>Доля ответов</th></tr>" % esc(title)]
+    for r in rows:
+        parts.append("<tr><td>%s</td><td>%d</td><td>%d</td><td>%d</td><td>%.1f%%</td></tr>" % (
+            esc(r["title"]), r["scored"], r["sent"], r["replied"], r["reply_rate"]))
+    if not rows:
+        parts.append("<tr><td colspan='5'>нет данных</td></tr>")
+    parts.append("</table></div>")
+    return "".join(parts)
+
+
+def render_funnel(conn, wait_days=None):
+    """Страница «Воронка»: найдено → оценено → письмо → отправлено → ответ."""
+    settings = get_settings()
+    wait_days = settings.reply_wait_days if wait_days is None else wait_days
+    f = analytics.funnel(conn, wait_days=wait_days)
+    c = analytics.conversions(f)
+    parts = [
+        "<html><head><meta charset='utf-8'><title>Воронка — hh-assistant</title>"
+        "<style>%s</style></head><body>" % CSS,
+        "<header><b><a href='/'>← к списку</a></b><span>воронка откликов · "
+        "окно ожидания ответа: %d дн.</span></header><main>" % wait_days,
+        "<div class='card'><table><tr><th>Шаг</th><th>Вакансий</th><th>Конверсия</th></tr>",
+    ]
+    for key, title, _base in analytics.STEPS:
+        value = "—" if key == "found" else "%.1f%%" % c.get(key, 0.0)
+        parts.append("<tr><td>%s</td><td class='score'>%d</td><td>%s</td></tr>" % (
+            esc(title), f[key], value))
+    parts.append("</table></div>")
+
+    parts.append("<div class='card'><div class='meta'><b>Детали</b></div><table>")
+    for title, value in (("готово к отправке", f["ready"]),
+                         ("пропущено", f["skipped"]),
+                         ("без ответа > %d дн." % wait_days, f["no_answer"]),
+                         ("приглашения", f["invited"]),
+                         ("отказы", f["rejected"])):
+        parts.append("<tr><td>%s</td><td class='score'>%d</td></tr>" % (esc(title), value))
+    parts.append("</table></div>")
+
+    parts.append(_breakdown_table("Разрез по баллам", analytics.by_score_band(conn)))
+    parts.append(_breakdown_table("Форматы работы", analytics.by_format(conn)))
+    parts.append(_breakdown_table("Компании (топ-10)", analytics.by_company(conn)))
+
+    rows = queue.responded(conn)
+    parts.append("<div class='card'><div class='meta'><b>Ответы работодателей: %d</b></div>"
+                 "<table><tr><th>Статус</th><th>Вакансия</th><th>Компания</th><th>Балл</th>"
+                 "<th>Когда</th><th></th></tr>" % len(rows))
+    for r in rows:
+        parts.append("<tr><td>%s</td><td>%s</td><td>%s</td><td class='score %s'>%s</td>"
+                     "<td>%s</td><td><a class='btn' href='/v/%s'>открыть</a></td></tr>" % (
+                         esc(r["status"]), esc(r["title"]), esc(r["company"]),
+                         score_class(r["score"]),
+                         r["score"] if r["score"] is not None else "—",
+                         esc((r["sent_at"] or "")[:10]), esc(r["id"])))
+    if not rows:
+        parts.append("<tr><td colspan='6'>Ответов пока нет: отметьте в карточке «Ответили», "
+                     "«Приглашение» или «Отказ».</td></tr>")
+    parts.append("</table></div>")
+
+    waiting = analytics.awaiting_reply(conn, wait_days=wait_days)
+    parts.append("<div class='card'><div class='meta'><b>Ждут ответа > %d дн.: %d</b></div>"
+                 "<table><tr><th>Отправлено</th><th>Вакансия</th><th>Компания</th><th>Балл</th>"
+                 "<th></th></tr>" % (wait_days, len(waiting)))
+    for r in waiting:
+        parts.append("<tr><td>%s</td><td>%s</td><td>%s</td><td class='score %s'>%s</td>"
+                     "<td><a class='btn' href='/v/%s'>открыть</a></td></tr>" % (
+                         esc(r["sent_date"]), esc(r["title"]), esc(r["company"]),
+                         score_class(r["score"]),
+                         r["score"] if r["score"] is not None else "—", esc(r["id"])))
+    if not waiting:
+        parts.append("<tr><td colspan='5'>Таких откликов нет.</td></tr>")
+    parts.append("</table></div></main></body></html>")
+    return "".join(parts)
+
+
+def apply_status(conn, vacancy_id, kind, note=""):
+    """Смена статуса отклика из карточки. Возвращает текст отчёта для интерфейса."""
+    code = queue.kind_of(kind)
+    if not code:
+        return "неизвестный статус: %s (доступны: %s)" % (
+            kind, ", ".join(storage.KIND_TITLES[k] for k in storage.KIND_STATUSES))
+    if not storage.vacancy_with_letter(conn, vacancy_id):
+        return "вакансия не найдена: %s" % vacancy_id
+    queue.set_status(conn, vacancy_id, code, note=note)
+    return "статус: %s" % storage.KIND_TITLES[code]
 
 
 def _queries():
@@ -146,7 +237,7 @@ def run_action(kind, conn, limit=None):
     return "неизвестное действие: %s" % kind
 
 
-def render_card(conn, vacancy_id):
+def render_card(conn, vacancy_id, msg=""):
     row = storage.vacancy_with_letter(conn, vacancy_id)
     if not row:
         return None
@@ -154,16 +245,40 @@ def render_card(conn, vacancy_id):
     reasons = row["reasons"] or ""
     from . import matching
     match_line = matching.explain(dict(row), get_settings().profile) or "нет данных"
+    last = storage.latest_application(conn, vacancy_id)
+    kind = storage.status_kind(last["status"]) if last else ""
+    if kind:
+        status_line = "%s · %s" % (storage.KIND_TITLES.get(kind, last["status"]),
+                                   (last["sent_at"] or "")[:16].replace("T", " "))
+        if last["note"]:
+            status_line += " · " + last["note"]
+    else:
+        status_line = "ещё не отмечен"
     parts = [
         "<html><head><meta charset='utf-8'><title>%s</title><style>%s</style></head><body>" % (esc(row["title"]), CSS),
-        "<header><b><a href='/'>← к списку</a></b><span>%s</span></header><main>" % esc(row["company"]),
+        "<header><b><a href='/'>← к списку</a></b><span>%s</span>"
+        "<a class='btn' href='/funnel'>Воронка</a></header><main>" % esc(row["company"]),
+        ("<div class='card'>%s</div>" % esc(msg)) if msg else "",
         "<div class='card'><div class='meta'><b>%s</b> · %s · опыт: %s · зарплата: %s · "
         "<span class='score %s'>балл %s</span></div>"
         "<div class='reasons'>%s</div></div>" % (
-            esc(row["title"]), esc(row["work_format"] or "формат не указан"), esc(row["experience"] or "—"),
+            esc(row["title"]), esc(row["work_format"] or "формат не указан"),
+            esc(row["experience"] or "—"),
             fmt_salary(row), score_class(row["score"]), row["score"] if row["score"] is not None else "—",
             esc(reasons)),
         "<div class='card'><div class='reasons'><b>Сопоставление с профилем:</b> %s</div></div>" % esc(match_line),
+        "<div class='card'><div class='reasons'><b>Статус отклика:</b> %s</div>"
+        "<div class='actions'>"
+        "<form method='post' action='/status/%s' style='display:inline'>"
+        "<input type='hidden' name='kind' value='reply'>"
+        "<button class='btn' type='submit'>Ответили</button></form>"
+        "<form method='post' action='/status/%s' style='display:inline'>"
+        "<input type='hidden' name='kind' value='invite'>"
+        "<button class='btn' type='submit'>Приглашение</button></form>"
+        "<form method='post' action='/status/%s' style='display:inline'>"
+        "<input type='hidden' name='kind' value='reject'>"
+        "<button class='btn' type='submit'>Отказ</button></form>"
+        "</div></div>" % (esc(status_line), esc(row["id"]), esc(row["id"]), esc(row["id"])),
         "<div class='actions'>",
         "<a class='btn primary' target='_blank' rel='noopener' href='%s'>Открыть вакансию на hh</a>" % esc(row["url"]),
         "<button class='btn' onclick=\"navigator.clipboard.writeText(document.getElementById('letter').value);"
@@ -197,6 +312,14 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Location", to)
         self.end_headers()
 
+    def _form(self):
+        """Поля POST-формы (карточка присылает kind/note)."""
+        length = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(length) if length else b""
+        if not body:
+            return {}
+        return urllib.parse.parse_qs(body.decode("utf-8", "replace"))
+
     def do_GET(self):
         path = urllib.parse.urlparse(self.path).path
         conn = storage.connect()
@@ -206,8 +329,14 @@ class Handler(BaseHTTPRequestHandler):
                 threshold = int(qs.get("threshold", [get_settings().score_threshold])[0])
                 msg = qs.get("msg", [""])[0]
                 self._send(render_index(conn, threshold, limit=50, msg=msg))
+            elif path == "/funnel":
+                qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                days = qs.get("days", [None])[0]
+                self._send(render_funnel(conn, wait_days=int(days) if days else None))
             elif path.startswith("/v/"):
-                page = render_card(conn, path.split("/")[2])
+                qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                msg = qs.get("msg", [""])[0]
+                page = render_card(conn, path.split("/")[2], msg=msg)
                 self._send(page if page else "не найдено", status=200 if page else 404)
             elif path.startswith("/letter/"):
                 row = storage.vacancy_with_letter(conn, path.split("/")[2])
@@ -236,6 +365,13 @@ class Handler(BaseHTTPRequestHandler):
             elif path.startswith("/skip/"):
                 queue.skip(conn, path.split("/")[2])
                 self._redirect("/")
+            elif path.startswith("/status/"):
+                vacancy_id = path.split("/")[2]
+                form = self._form()
+                report = apply_status(conn, vacancy_id, (form.get("kind") or [""])[0],
+                                      (form.get("note") or [""])[0])
+                self._redirect("/v/%s?msg=%s" % (urllib.parse.quote(vacancy_id),
+                                                 urllib.parse.quote(report)))
             elif path.startswith("/run/"):
                 kind = path.split("/")[2]
                 report = run_action(kind, conn)

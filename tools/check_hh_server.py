@@ -15,7 +15,7 @@ from http.server import ThreadingHTTPServer
 APP = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, APP)
 
-from hhassist import storage, web  # noqa: E402
+from hhassist import analytics, storage, web  # noqa: E402
 
 PORT = 8799
 server = ThreadingHTTPServer(("127.0.0.1", PORT), web.Handler)
@@ -25,7 +25,7 @@ time.sleep(0.7)
 
 lines = []
 try:
-    for path in ("/", "/export"):
+    for path in ("/", "/export", "/funnel"):
         try:
             with urllib.request.urlopen("http://127.0.0.1:%d%s" % (PORT, path), timeout=10) as r:
                 body = r.read()
@@ -64,15 +64,19 @@ try:
 
     conn = storage.connect()
     lines.append("писем в базе: %d" % storage.stats(conn)["letters"])
+    f = analytics.funnel(conn)
+    lines.append("воронка: найдено %d, оценено %d, письма %d, отправлено %d, ответов %d" % (
+        f["found"], f["scored"], f["letters"], f["sent"], f["replied"]))
     row = conn.execute("SELECT vacancy_id FROM letters LIMIT 1").fetchone()
     conn.close()
     if row:
         path = "/v/%s" % row["vacancy_id"]
         with urllib.request.urlopen("http://127.0.0.1:%d%s" % (PORT, path), timeout=10) as r:
             body = r.read()
-            lines.append("%-10s -> %s, %d байт, textarea=%s, профиль=%s" % (
+            lines.append("%-10s -> %s, %d байт, textarea=%s, профиль=%s, статусы=%s" % (
                 "/v/…", r.status, len(body), b"textarea" in body,
-                "Сопоставление с профилем".encode("utf-8") in body))
+                "Сопоставление с профилем".encode("utf-8") in body,
+                b"/status/" in body))
 finally:
     server.shutdown()
     server.server_close()

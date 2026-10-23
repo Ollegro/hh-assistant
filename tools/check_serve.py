@@ -18,7 +18,7 @@ try:
     time.sleep(4)
     with urllib.request.urlopen(URL, timeout=10) as resp:
         body = resp.read()
-    buttons = [name for name in ("/run/collect", "/run/score", "/run/letters", "/export")
+    buttons = [name for name in ("/run/collect", "/run/score", "/run/letters", "/export", "/funnel")
                if name.encode("utf-8") in body]
     print("GET %s -> %s, %d байт" % (URL, resp.status, len(body)))
     print("кнопки на странице: %s" % ", ".join(buttons) if buttons else "кнопки не найдены")

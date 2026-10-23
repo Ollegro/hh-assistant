@@ -20,5 +20,5 @@ python tools\run_hh_assistant.py stats >> "%REPORT%" 2>&1
 type "%REPORT%"
 echo.
 echo Отчёт сохранён: %REPORT%
-echo Ожидается: Ran 108 tests ... OK, проверки сервера зелёные.
+echo Ожидается: Ran 143 tests ... OK, проверки сервера зелёные.
 pause

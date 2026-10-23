@@ -14,7 +14,7 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _bootstrap import APP, sample_vacancy  # noqa: E402,F401
 
-from hhassist import collector, storage, web  # noqa: E402
+from hhassist import collector, queue, storage, web  # noqa: E402
 from hhassist.config import DEFAULT_PROFILE, Settings  # noqa: E402
 
 
@@ -47,9 +47,11 @@ class WebBase(unittest.TestCase):
         self.use_settings(offline_settings())
 
     def use_settings(self, settings):
-        patcher = mock.patch.object(web, "get_settings", lambda: settings)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        """Подменяет настройки в веб-интерфейсе и в очереди (там тоже читается профиль)."""
+        for module in (web, queue):
+            patcher = mock.patch.object(module, "get_settings", lambda: settings)
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def stored(self, table):
         return self.conn.execute("SELECT COUNT(*) FROM %s" % table).fetchone()[0]
@@ -161,6 +163,61 @@ class CollectSettingsTest(unittest.TestCase):
     def test_collect_defaults(self):
         s = self.settings_from({})
         self.assertEqual((s.collect_limit, s.collect_pages, s.collect_queries), (20, 1, 0))
+
+
+class StatusActionTest(WebBase):
+    """Карточка вакансии: статусы отклика и страница «Воронка»."""
+
+    def add(self, vid="1", letter=True):
+        storage.upsert_vacancy(self.conn, sample_vacancy(id=vid))
+        if letter:
+            storage.save_letter(self.conn, vid, "письмо для %s" % vid, "manual")
+
+    def test_apply_status_writes_journal(self):
+        self.add()
+        self.assertEqual(web.apply_status(self.conn, "1", "приглашение"), "статус: приглашение")
+        row = storage.latest_application(self.conn, "1")
+        self.assertEqual(storage.status_kind(row["status"]), "invite")
+        self.assertEqual(self.stored("applications"), 1)
+
+    def test_unknown_status_reported_and_nothing_written(self):
+        self.add()
+        self.assertIn("неизвестный статус", web.apply_status(self.conn, "1", "телепорт"))
+        self.assertIsNone(storage.latest_application(self.conn, "1"))
+
+    def test_missing_vacancy_reported(self):
+        self.assertIn("не найдена", web.apply_status(self.conn, "404", "ответ"))
+
+    def test_card_has_status_buttons(self):
+        self.add()
+        page = web.render_card(self.conn, "1")
+        self.assertIn("/status/1", page)
+        self.assertIn("Статус отклика", page)
+        self.assertIn("Приглашение", page)
+
+    def test_card_shows_current_status_and_message(self):
+        self.add()
+        web.apply_status(self.conn, "1", "reject")
+        self.assertIn("отказ", web.render_card(self.conn, "1"))
+        self.assertIn("статус: отказ", web.render_card(self.conn, "1", msg="статус: отказ"))
+
+    def test_index_links_to_funnel(self):
+        self.assertIn("/funnel", web.render_index(self.conn, 55, 50))
+
+    def test_funnel_page_renders(self):
+        self.add()
+        storage.save_score(self.conn, "1", 90, "откликаться", [])
+        web.apply_status(self.conn, "1", "sent")
+        page = web.render_funnel(self.conn)
+        self.assertIn("воронка откликов", page)
+        self.assertIn("Ответы работодателей", page)
+        self.assertIn("Ждут ответа", page)
+        self.assertIn("Разрез по баллам", page)
+
+    def test_funnel_page_on_empty_base(self):
+        page = web.render_funnel(self.conn)
+        self.assertIn("воронка откликов", page)
+        self.assertIn("Таких откликов нет", page)
 
 
 if __name__ == "__main__":

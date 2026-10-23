@@ -12,7 +12,7 @@ import os
 import sys
 import time
 
-from hhassist import collector, hh_api, jobs, letters, llm, storage, web
+from hhassist import analytics, collector, hh_api, jobs, letters, llm, queue, storage, web
 from hhassist.config import BASE, ensure_dirs, get_settings
 
 
@@ -75,7 +75,7 @@ def cmd_api_check(args):
         print("длина токена   %d символов" % report["token_length"])
     me = report["me"] or {}
     if me:
-        print("/me            id=%s, %s" % (me.get("id"), me.get("name") or "—"))
+        print("/me            id=%s, %s" % (me.get("id"), me.get("name") or "-"))
     if report["found"] is not None:
         print("/vacancies     найдено: %s" % report["found"])
     if report["error"]:
@@ -137,9 +137,43 @@ def cmd_serve(args):
 def cmd_export(args):
     conn = storage.connect()
     out_dir = args.out or jobs.default_out_dir(BASE)
-    made = jobs.export_letters(conn, out_dir)
-    print("экспортировано писем: %d -> %s" % (made, out_dir))
+    if not args.csv:
+        made = jobs.export_letters(conn, out_dir)
+        print("экспортировано писем: %d -> %s" % (made, out_dir))
+    if args.csv:
+        path = args.csv_path or os.path.join(out_dir, "vacancies.csv")
+        rows = analytics.write_csv(conn, path)
+        print("экспортировано строк CSV: %d -> %s" % (rows, path))
     conn.close()
+
+
+def cmd_funnel(args):
+    """Воронка откликов: найдено → оценено → письмо → отправлено → ответ."""
+    conn = storage.connect()
+    days = args.days if args.days is not None else get_settings().reply_wait_days
+    print(analytics.format_report(conn, wait_days=days))
+    conn.close()
+
+
+def cmd_mark(args):
+    """Ручная смена статуса: отправлено / ответ / приглашение / отказ / пропущено."""
+    conn = storage.connect()
+    code = queue.kind_of(args.status)
+    if not code:
+        print("неизвестный статус: %s" % args.status)
+        print("доступны: %s" % ", ".join(
+            "%s (%s)" % (storage.KIND_TITLES[k], k) for k in storage.KIND_STATUSES))
+        conn.close()
+        return 1
+    if not storage.vacancy_with_letter(conn, args.id):
+        print("вакансия не найдена: %s" % args.id)
+        conn.close()
+        return 1
+    status = queue.set_status(conn, args.id, code, note=args.note or "")
+    print("%s -> %s%s" % (args.id, status,
+                          (" | " + args.note) if args.note else ""))
+    conn.close()
+    return 0
 
 
 def cmd_reset(args):
@@ -167,9 +201,9 @@ def cmd_list(args):
     print("%-10s %4s %-38s %-22s %-14s %s" % ("id", "балл", "вакансия", "компания", "формат", "описание"))
     for r in rows:
         print("%-10s %4s %-38s %-22s %-14s %d знаков" % (
-            r["id"], r["score"] if r["score"] is not None else "—",
+            r["id"], r["score"] if r["score"] is not None else "-",
             (r["title"] or "")[:38], (r["company"] or "")[:22],
-            (r["work_format"] or "—")[:14], len(r["description"] or "")))
+            (r["work_format"] or "-")[:14], len(r["description"] or "")))
     print("всего:", len(rows))
     conn.close()
 
@@ -223,9 +257,23 @@ def main(argv=None):
     p.add_argument("--port", type=int, default=8765)
     p.set_defaults(func=cmd_serve)
 
-    p = sub.add_parser("export", help="экспортировать письма в out/")
+    p = sub.add_parser("export", help="экспортировать письма в out/ (--csv — таблица вакансий)")
     p.add_argument("--out", default=None)
+    p.add_argument("--csv", action="store_true", help="вместо писем выгрузить таблицу вакансий в CSV")
+    p.add_argument("--csv-path", default=None, help="куда сохранить CSV (по умолчанию out/vacancies.csv)")
     p.set_defaults(func=cmd_export)
+
+    p = sub.add_parser("funnel", help="воронка откликов и конверсии")
+    p.add_argument("--days", type=int, default=None,
+                   help="сколько дней ждать ответ, прежде чем считать «молчанием» (REPLY_WAIT_DAYS)")
+    p.set_defaults(func=cmd_funnel)
+
+    p = sub.add_parser("mark", help="сменить статус отклика вручную")
+    p.add_argument("id", help="id вакансии (см. list)")
+    p.add_argument("--status", required=True,
+                   help="sent | reply | invite | reject | skip (можно по-русски: «ответ», «приглашение»)")
+    p.add_argument("--note", default="", help="примечание к записи журнала")
+    p.set_defaults(func=cmd_mark)
 
     p = sub.add_parser("reset", help="удалить базу данных (для пересбора)")
     p.add_argument("--yes", action="store_true")

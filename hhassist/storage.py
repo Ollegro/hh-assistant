@@ -9,6 +9,65 @@ from .config import DATA_DIR, ensure_dirs
 
 DB_PATH = os.path.join(DATA_DIR, "hhassist.sqlite3")
 
+# Журнал откликов. Каждая смена статуса — новая строка в applications
+# (история сохраняется), текущий статус — последняя по id запись вакансии.
+STATUS_READY = "готово к отправке"
+STATUS_SENT = "отправлено вручную"
+STATUS_SKIPPED = "пропущено"
+STATUS_REPLY = "ответ"
+STATUS_INVITE = "приглашение"
+STATUS_REJECT = "отказ"
+
+# Коды статусов: в коде и в аналитике работаем с ними, в журнал пишем подписи.
+KIND_STATUSES = {
+    "ready": (STATUS_READY,),
+    "sent": (STATUS_SENT,),
+    "skip": (STATUS_SKIPPED,),
+    "reply": (STATUS_REPLY,),
+    "invite": (STATUS_INVITE,),
+    "reject": (STATUS_REJECT,),
+}
+
+KIND_TITLES = {
+    "ready": "готово к отправке",
+    "sent": "отправлено",
+    "skip": "пропущено",
+    "reply": "ответ",
+    "invite": "приглашение",
+    "reject": "отказ",
+}
+
+# Прочитать старые записи журнала и свободный ввод из карточки/CLI.
+STATUS_ALIASES = {label.lower(): kind for kind, labels in KIND_STATUSES.items()
+                  for label in labels}
+STATUS_ALIASES.update({
+    "готово": "ready",
+    "пропуск": "skip",
+    "ответ получен": "reply",
+    "ответ работодателя": "reply",
+    "приглашение на собеседование": "invite",
+    "отказ работодателя": "reject",
+})
+
+# Отправленные отклики: в этих статусах вакансия уже ушла работодателю.
+SENT_KINDS = ("sent", "reply", "invite", "reject")
+# Ответы работодателя (приглашение и отказ — тоже ответ).
+REPLY_KINDS = ("reply", "invite", "reject")
+
+
+def status_kind(status):
+    """Код статуса ('sent', 'reply', …) по записи журнала; '' — если не распознан."""
+    if not status:
+        return ""
+    return STATUS_ALIASES.get(str(status).strip().lower(), "")
+
+
+def statuses_for(kinds):
+    """Подписи журнала для набора кодов: ('reply', 'invite') -> ('ответ', 'приглашение')."""
+    if isinstance(kinds, str):
+        kinds = (kinds,)
+    return tuple(label for kind in kinds for label in KIND_STATUSES.get(kind, ()))
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS vacancies (
     id TEXT PRIMARY KEY,
@@ -125,13 +184,63 @@ def save_letter(conn, vacancy_id, text, model="", commit=True):
         conn.commit()
 
 
-def add_application(conn, vacancy_id, status="готово к отправке", note="", commit=True):
+def add_application(conn, vacancy_id, status=STATUS_READY, note="", commit=True, at=None):
+    """Запись в журнал отклика. `at` — время события (по умолчанию сейчас)."""
     conn.execute(
         "INSERT INTO applications (vacancy_id, status, sent_at, note) VALUES (?, ?, ?, ?)",
-        (vacancy_id, status, now(), note),
+        (vacancy_id, status, at or now(), note),
     )
     if commit:
         conn.commit()
+
+
+def set_status(conn, vacancy_id, kind, note="", commit=True, at=None):
+    """Пишет в журнал подпись статуса по коду. Возвращает подпись."""
+    labels = KIND_STATUSES.get(kind)
+    if not labels:
+        raise ValueError("неизвестный статус: %s" % kind)
+    add_application(conn, vacancy_id, status=labels[0], note=note, commit=commit, at=at)
+    return labels[0]
+
+
+def latest_applications(conn):
+    """По одной строке на вакансию — последняя запись журнала (текущий статус)."""
+    return conn.execute(
+        """SELECT a.id, a.vacancy_id, a.status, a.sent_at, a.note
+           FROM applications a
+           JOIN (SELECT vacancy_id, MAX(id) AS last_id FROM applications GROUP BY vacancy_id) m
+             ON m.last_id = a.id
+           ORDER BY a.id DESC"""
+    ).fetchall()
+
+
+def latest_application(conn, vacancy_id):
+    """Последняя запись журнала по вакансии (None, если откликов не было)."""
+    return conn.execute(
+        """SELECT id, vacancy_id, status, sent_at, note FROM applications
+           WHERE vacancy_id = ? ORDER BY id DESC LIMIT 1""",
+        (vacancy_id,),
+    ).fetchone()
+
+
+def latest_kinds(conn):
+    """{vacancy_id: код текущего статуса} — для таблиц и фильтров."""
+    return {row["vacancy_id"]: status_kind(row["status"]) for row in latest_applications(conn)}
+
+
+def vacancy_ids_with(conn, kinds):
+    """id вакансий, у которых в журнале есть хотя бы одна запись из указанных статусов."""
+    labels = statuses_for(kinds)
+    if not labels:
+        return set()
+    sql = "SELECT DISTINCT vacancy_id FROM applications WHERE status IN (%s)" % ",".join(
+        "?" * len(labels))
+    return {row["vacancy_id"] for row in conn.execute(sql, labels)}
+
+
+def count_vacancies_with(conn, kinds):
+    """Сколько вакансий хотя бы раз попадали в указанные статусы."""
+    return len(vacancy_ids_with(conn, kinds))
 
 
 def log_event(conn, kind, payload=None, commit=True):
@@ -182,4 +291,7 @@ def stats(conn):
         "applications": q("SELECT COUNT(*) FROM applications"),
         "sent_today": sent_today(conn),
         "high_score": q("SELECT COUNT(*) FROM scores WHERE score >= 70"),
+        "sent": count_vacancies_with(conn, SENT_KINDS),
+        "replied": count_vacancies_with(conn, REPLY_KINDS),
+        "invited": count_vacancies_with(conn, ("invite",)),
     }

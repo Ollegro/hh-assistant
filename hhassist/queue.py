@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Очередь откликов: выборка подходящих вакансий, лимиты, экспорт писем."""
+"""Очередь откликов: выборка подходящих вакансий, лимиты, статусы, экспорт писем."""
 import os
 
 from . import matching, storage
@@ -51,13 +51,56 @@ def export_letter(conn, vacancy_id, out_dir):
     return path
 
 
-def mark_sent(conn, vacancy_id, status="отправлено вручную", note=""):
+def kind_of(value):
+    """Код статуса по коду или подписи: 'ответ' -> 'reply', 'invite' -> 'invite'."""
+    value = (value or "").strip().lower()
+    if value in storage.KIND_STATUSES:
+        return value
+    return storage.status_kind(value)
+
+
+def set_status(conn, vacancy_id, kind, note=""):
+    """Переводит вакансию в новый статус: запись в журнал + событие.
+
+    Принимает и код ('invite'), и подпись ('приглашение'). Возвращает подпись,
+    записанную в журнал.
+    """
+    code = kind_of(kind)
+    if not code:
+        raise ValueError("неизвестный статус: %s" % kind)
+    status = storage.set_status(conn, vacancy_id, code, note=note)
+    storage.log_event(conn, "status", {"vacancy_id": vacancy_id, "kind": code,
+                                       "status": status, "note": note})
+    return status
+
+
+def responded(conn, limit=50):
+    """Вакансии, где последний статус — ответ работодателя (ответ / приглашение / отказ)."""
+    labels = storage.statuses_for(storage.REPLY_KINDS)
+    sql = """SELECT v.id, v.title, v.company, v.url, s.score,
+                    a.status, a.sent_at, a.note
+             FROM applications a
+             JOIN (SELECT vacancy_id, MAX(id) AS last_id FROM applications
+                   GROUP BY vacancy_id) m ON m.last_id = a.id
+             JOIN vacancies v ON v.id = a.vacancy_id
+             LEFT JOIN scores s ON s.vacancy_id = v.id
+             WHERE a.status IN (%s)
+             ORDER BY a.id DESC LIMIT ?""" % ",".join("?" * len(labels))
+    return conn.execute(sql, labels + (limit,)).fetchall()
+
+
+def mark_sent(conn, vacancy_id, status=None, note=""):
+    """Отклик отправлен вручную."""
+    status = status or storage.STATUS_SENT
     storage.add_application(conn, vacancy_id, status=status, note=note)
     storage.log_event(conn, "sent", {"vacancy_id": vacancy_id, "status": status})
     return True
 
 
-def skip(conn, vacancy_id, reason="пропущено"):
-    storage.add_application(conn, vacancy_id, status=reason)
-    storage.log_event(conn, "skip", {"vacancy_id": vacancy_id, "reason": reason})
+def skip(conn, vacancy_id, reason=""):
+    """Вакансия пропущена сознательно (в журнал — статус «пропущено»)."""
+    status = storage.set_status(conn, vacancy_id, "skip", note=reason)
+    storage.log_event(conn, "skip", {"vacancy_id": vacancy_id, "status": status,
+                                     "reason": reason})
     return True
+
