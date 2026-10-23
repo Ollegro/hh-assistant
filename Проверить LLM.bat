@@ -1,8 +1,8 @@
 @echo off
 chcp 65001 >nul
 title hh-assistant: проверка LLM
-rem Diagnose the LLM loop: .env settings -> connection -> scoring -> letter,
-rem then compare rule scores with model scores on vacancies from the database.
+rem Диагностика LLM: настройки .env -> связь -> скоринг -> письмо,
+rem затем сравнение правил и модели на вакансиях из базы.
 cd /d "%~dp0"
 set PYTHONUTF8=1
 set PYTHONIOENCODING=utf-8

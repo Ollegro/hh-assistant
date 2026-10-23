@@ -86,6 +86,7 @@ CREATE TABLE IF NOT EXISTS vacancies (
     created_at TEXT,
     area TEXT DEFAULT '',
     area_id TEXT DEFAULT '',
+    region TEXT DEFAULT '',
     seen_at TEXT
 );
 CREATE TABLE IF NOT EXISTS scores (
@@ -132,7 +133,7 @@ def connect():
 # (CREATE TABLE IF NOT EXISTS не меняет уже созданную таблицу.)
 MIGRATIONS = {
     "vacancies": (("area", "TEXT DEFAULT ''"), ("area_id", "TEXT DEFAULT ''"),
-                  ("seen_at", "TEXT")),
+                  ("region", "TEXT DEFAULT ''"), ("seen_at", "TEXT")),
     "letters": (("edited", "INTEGER DEFAULT 0"), ("edited_at", "TEXT")),
 }
 
@@ -169,17 +170,18 @@ def upsert_vacancy(conn, v, commit=True):
     conn.execute(
         """INSERT INTO vacancies (id, title, company, url, salary_from, salary_to, currency,
                work_format, experience, published_at, description, skills, source, created_at,
-               area, area_id, seen_at)
+               area, area_id, region, seen_at)
            VALUES (:id, :title, :company, :url, :salary_from, :salary_to, :currency,
                :work_format, :experience, :published_at, :description, :skills, :source,
-               :created_at, :area, :area_id, :seen_at)
+               :created_at, :area, :area_id, :region, :seen_at)
            ON CONFLICT(id) DO UPDATE SET
                title=excluded.title, company=excluded.company, url=excluded.url,
                salary_from=excluded.salary_from, salary_to=excluded.salary_to,
                currency=excluded.currency, work_format=excluded.work_format,
                experience=excluded.experience, published_at=excluded.published_at,
                description=excluded.description, skills=excluded.skills,
-               area=excluded.area, area_id=excluded.area_id, seen_at=excluded.seen_at""",
+               area=excluded.area, area_id=excluded.area_id, region=excluded.region,
+               seen_at=excluded.seen_at""",
         {
             "id": v.get("id"),
             "title": v.get("title", ""),
@@ -197,6 +199,7 @@ def upsert_vacancy(conn, v, commit=True):
             "created_at": now(),
             "area": v.get("area", "") or "",
             "area_id": str(v.get("area_id") or ""),
+            "region": v.get("region", "") or "",
             "seen_at": now(),
         },
     )
@@ -349,12 +352,34 @@ def last_event(conn, kind):
     return {"ts": row["ts"], "payload": payload}
 
 
-def area_counts(conn):
-    """[(регион, сколько вакансий)] — для фильтра на главной странице."""
+def score_counts(conn, threshold):
+    """(оценено не ниже порога, оценено всего) — для сводки на главной странице."""
+    row = conn.execute(
+        """SELECT COALESCE(SUM(CASE WHEN score >= ? THEN 1 ELSE 0 END), 0) AS above,
+                  COUNT(*) AS scored FROM scores""", (threshold,)).fetchone()
+    return row["above"], row["scored"]
+
+
+def region_counts(conn):
+    """[(субъект РФ, сколько вакансий)] — верхний уровень фильтра на главной."""
     return conn.execute(
-        """SELECT COALESCE(area, '') AS area, COUNT(*) AS cnt FROM vacancies
-           GROUP BY COALESCE(area, '') ORDER BY cnt DESC"""
+        """SELECT COALESCE(region, '') AS region, COUNT(*) AS cnt FROM vacancies
+           GROUP BY COALESCE(region, '') ORDER BY cnt DESC, region"""
     ).fetchall()
+
+
+def area_counts(conn, region=None):
+    """[(город, сколько вакансий)] — нижний уровень фильтра.
+
+    region=None — по всем вакансиям, иначе только по выбранному субъекту РФ.
+    """
+    sql = "SELECT COALESCE(area, '') AS area, COUNT(*) AS cnt FROM vacancies"
+    params = ()
+    if region is not None:
+        sql += " WHERE COALESCE(region, '') = ?"
+        params = (region,)
+    sql += " GROUP BY COALESCE(area, '') ORDER BY cnt DESC, area"
+    return conn.execute(sql, params).fetchall()
 
 
 def sent_companies_since(conn, cutoff):

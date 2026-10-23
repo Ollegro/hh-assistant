@@ -89,7 +89,7 @@ class MigrationTest(unittest.TestCase):
     def test_new_columns_added(self):
         conn = storage.connect()
         self.addCleanup(conn.close)
-        self.assertLessEqual({"area", "area_id", "seen_at"}, self.columns("vacancies"))
+        self.assertLessEqual({"area", "area_id", "region", "seen_at"}, self.columns("vacancies"))
         self.assertLessEqual({"edited", "edited_at"}, self.columns("letters"))
 
     def test_seen_at_backfilled_from_created_at(self):
@@ -272,6 +272,59 @@ class RegionTest(Base):
         page = web.render_index(self.conn, 55, 10, area="Казань")
         self.assertIn("Казань", page)
         self.assertNotIn("href='/v/1'", page)
+
+    def test_html_parser_reads_region_from_json_ld(self):
+        """Город и субъект РФ берутся из JSON-LD JobPosting (разметка hh 2026)."""
+        html = ('<h1 data-qa="vacancy-title">AI-инженер</h1>'
+                '<script type="application/ld+json">{"@type": "JobPosting",'
+                ' "jobLocation": {"address": {"addressLocality": "Химки",'
+                ' "addressRegion": "Московская область"}}}</script>')
+        v = collector.parse_vacancy(html, "1")
+        self.assertEqual((v["area"], v["region"]), ("Химки", "Московская область"))
+
+    def test_region_saved_and_filtered(self):
+        self.scored("1", area="Химки", region="Московская область")
+        self.scored("2", area="Москва", region="Москва")
+        page = web.render_index(self.conn, 55, 10, region="Московская область")
+        self.assertIn("Химки", page)
+        self.assertNotIn("href='/v/2'", page)
+
+    def test_old_rows_without_region_match_by_city(self):
+        """Вакансии, собранные до появления region, не выпадают из фильтра."""
+        self.scored("1", area="Москва")
+        page = web.render_index(self.conn, 55, 10, region="Москва")
+        self.assertIn("href='/v/1'", page)
+
+    def test_threshold_zero_shows_everything(self):
+        """Порог можно снизить в интерфейсе — видно все собранные вакансии."""
+        self.scored("1", score=10, region="Москва", area="Москва")
+        page = web.render_index(self.conn, 0, 10)
+        self.assertIn("href='/v/1'", page)
+
+    def test_index_shows_where_vacancies_disappeared(self):
+        """Сводка отвечает на «почему в списке 9»: собрано всего и ниже порога."""
+        self.scored("1", score=80)
+        self.scored("2", score=10)
+        page = web.render_index(self.conn, 55, 10)
+        self.assertIn("собрано в базе: <b>2</b>", page)
+        self.assertIn("ниже порога: <b>1</b>", page)
+
+    def test_area_catalog_without_network(self):
+        """Без кэша справочник отдаёт встроенный набор и не ходит в сеть."""
+        from hhassist import areas
+        with mock.patch.object(areas, "_read_cache", lambda: None), \
+                mock.patch.object(areas, "_download", side_effect=AssertionError("сеть")):
+            items = areas.cached()
+            self.assertEqual(areas.name_of(113), "Россия")
+        self.assertEqual(items[0], areas.ALL_RUSSIA)
+        self.assertIn((2, "Санкт-Петербург"), items)
+
+    def test_area_catalog_reads_cache(self):
+        from hhassist import areas
+        with mock.patch.object(areas, "_read_cache", lambda: [(1, "Москва")]):
+            self.assertEqual(areas.cached(), [(113, "Россия"), (1, "Москва")])
+            self.assertEqual(areas.region_id("москва"), 1)
+            self.assertIsNone(areas.region_id("Атлантида"))
 
     def test_search_ids_sends_multiple_areas(self):
         captured = {}

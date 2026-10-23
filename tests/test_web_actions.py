@@ -60,7 +60,7 @@ class WebBase(unittest.TestCase):
 class CollectActionTest(WebBase):
     """Кнопка «Собрать вакансии»: все запросы из queries.txt, лимит из настроек."""
 
-    def run_collect(self, queries, per_query=1, settings=None, broken=()):
+    def run_collect(self, queries, per_query=1, settings=None, broken=(), area=None):
         calls = []
 
         def fake_collect(query, **kwargs):
@@ -76,7 +76,7 @@ class CollectActionTest(WebBase):
             self.use_settings(settings)
         with mock.patch.object(web, "_queries", lambda: list(queries)), \
                 mock.patch.object(collector, "collect", fake_collect):
-            report = web.run_action("collect", self.conn)
+            report = web.run_action("collect", self.conn, area=area)
         return report, calls
 
     def test_uses_every_query_from_queries_file(self):
@@ -85,7 +85,13 @@ class CollectActionTest(WebBase):
         report, calls = self.run_collect(queries)
         self.assertEqual([c["query"] for c in calls], queries)
         self.assertEqual(report, "собрано вакансий: 5 из 250 найденных "
-                                 "(источник: html, запросов: 5, лимит: 20)")
+                                 "(источник: html, запросов: 5, лимит: 20, "
+                                 "регион: вся Россия)")
+
+    def test_region_from_form_goes_to_collector(self):
+        """Выбор региона в интерфейсе уходит в поиск hh как area=<id>."""
+        _, calls = self.run_collect(["AI инженер"], area="1")
+        self.assertEqual(calls[0]["area"], [1])
 
     def test_limit_and_pages_come_from_settings(self):
         settings = offline_settings(collect_limit=25, collect_pages=2)

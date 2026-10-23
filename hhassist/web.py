@@ -5,7 +5,7 @@ import os
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import analytics, jobs, llm, queue, storage
+from . import analytics, areas, jobs, llm, queue, storage
 from .config import BASE, get_settings
 
 CSS = """
@@ -79,21 +79,58 @@ def parser_warning(conn, hours=24):
                 (event["ts"] or "")[:16].replace("T", " ")))
 
 
-def render_index(conn, threshold, limit, msg="", area=""):
-    rows = queue.next_batch(conn, threshold=threshold, limit=limit * 3 if area else limit)
-    if area:
-        rows = [r for r in rows if (r["area"] or "") == area][:limit]
+def _options(pairs, current=""):
+    """<option> из [(значение, подпись)] с отметкой выбранного."""
+    out = []
+    for value, title in pairs:
+        selected = " selected" if str(value) == str(current) else ""
+        out.append("<option value='%s'%s>%s</option>" % (esc(value), selected, esc(title)))
+    return "".join(out)
+
+
+def _region_options(conn):
+    """Регионы: справочник субъектов РФ + счётчики из базы."""
+    counts = {row["region"]: row["cnt"] for row in storage.region_counts(conn) if row["region"]}
+    total = conn.execute("SELECT COUNT(*) FROM vacancies").fetchone()[0]
+    pairs = [("", "все регионы (%d)" % total)]
+    known = set()
+    for area_id, name in areas.cached():
+        if area_id == areas.ALL_RUSSIA[0]:
+            continue
+        known.add(name)
+        pairs.append((name, "%s (%d)" % (name, counts[name]) if counts.get(name) else name))
+    # регионы из базы, которых нет в справочнике (например, «Москва» вместо субъекта)
+    for name in sorted(set(counts) - known):
+        pairs.append((name, "%s (%d)" % (name, counts[name])))
+    return pairs
+
+
+def _city_options(conn, region):
+    """Города: при выбранном регионе — только его, иначе все из базы."""
+    pairs = [("", "все города")]
+    for row in storage.area_counts(conn, region or None):
+        value = row["area"] or ""
+        if value:
+            pairs.append((value, "%s (%d)" % (value, row["cnt"])))
+    return pairs
+
+
+def render_index(conn, threshold, limit, msg="", area="", region=""):
+    rows = queue.next_batch(conn, threshold=threshold, limit=limit,
+                            region=region, area=area)
     st = storage.stats(conn)
     left = queue.can_send_today(conn, get_settings().daily_limit)
+    collect_regions = _options([(aid, name) for aid, name in areas.cached()], 113)
     actions = (
         "<form method='post' action='/run/collect' style='display:inline'>"
+        "<select name='area' title='регион сбора'>%s</select>"
         "<button class='btn' type='submit'>Собрать вакансии</button></form>"
         "<form method='post' action='/run/score' style='display:inline'>"
         "<button class='btn' type='submit'>Оценить</button></form>"
         "<form method='post' action='/run/letters' style='display:inline'>"
         "<button class='btn' type='submit'>Сгенерировать письма</button></form>"
         "<a class='btn' href='/export'>Экспорт писем в файлы</a>"
-        "<a class='btn' href='/funnel'>Воронка и ответы</a>"
+        "<a class='btn' href='/funnel'>Воронка и ответы</a>" % collect_regions
     )
     parts = [
         "<html><head><meta charset='utf-8'><title>hh-assistant</title><style>%s</style></head><body>" % CSS,
@@ -108,29 +145,38 @@ def render_index(conn, threshold, limit, msg="", area=""):
     warning = parser_warning(conn)
     if warning:
         parts.append("<div class='card'>%s</div>" % esc(warning))
-    options = ["<option value=''>все регионы</option>"]
-    for row in storage.area_counts(conn):
-        value = row["area"] or ""
-        selected = " selected" if value == area else ""
-        options.append("<option value='%s'%s>%s (%d)</option>" % (
-            esc(value), selected, esc(value or "регион не указан"), row["cnt"]))
-    parts.append(
+    filters = (
         "<div class='actions'><form method='get' action='/' style='display:inline'>"
-        "<input type='hidden' name='threshold' value='%d'>"
-        "<select name='area' onchange='this.form.submit()'>%s</select></form></div>" % (
-            threshold, "".join(options)))
-    parts.append("<table><tr><th>Балл</th><th>Вакансия</th><th>Компания</th><th>Формат</th><th>Опыт</th>"
+        "<select name='region' title='регион' onchange='this.form.submit()'>%s</select>"
+        " <select name='area' title='город' onchange='this.form.submit()'>%s</select>"
+        " <select name='threshold' title='порог оценки' onchange='this.form.submit()'>%s</select>"
+        "</form></div>" % (_options(_region_options(conn), region),
+                           _options(_city_options(conn, region), area),
+                           _options([(0, "порог: показать все"), (40, "порог: 40"),
+                                     (55, "порог: 55"), (70, "порог: 70")], threshold))
+    )
+    parts.append(filters)
+    above, scored = storage.score_counts(conn, threshold)
+    parts.append(
+        "<div class='meta'>собрано в базе: <b>%d</b> · оценено: <b>%d</b> · "
+        "выше порога %d: <b>%d</b> · ниже порога: <b>%d</b> · без оценки: <b>%d</b> · "
+        "в списке: <b>%d</b></div>" % (
+            st["vacancies"], scored, threshold, above, max(0, scored - above),
+            max(0, st["vacancies"] - scored), len(rows)))
+    parts.append("<table><tr><th>Балл</th><th>Вакансия</th><th>Компания</th><th>Город</th>"
+                 "<th>Формат</th><th>Опыт</th>"
                  "<th>Зарплата</th><th>Вердикт</th><th></th></tr>")
     for r in rows:
         parts.append(
-            "<tr><td class='score %s'>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td>"
-            "<td>%s</td><td><a class='btn' href='/v/%s'>открыть</a></td></tr>" % (
+            "<tr><td class='score %s'>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td>"
+            "<td>%s</td><td>%s</td><td>%s</td><td><a class='btn' href='/v/%s'>открыть</a></td></tr>" % (
                 score_class(r["score"]), r["score"] if r["score"] is not None else "—",
-                esc(r["title"]), esc(r["company"]), esc(r["work_format"]), esc(r["experience"]),
+                esc(r["title"]), esc(r["company"]), esc(r["region"] or r["area"]),
+                esc(r["work_format"]), esc(r["experience"]),
                 fmt_salary(r), esc(r["verdict"] or "—"), esc(r["id"])))
     if not rows:
-        parts.append("<tr><td colspan='8'>Пока нет вакансий выше порога. Запустите "
-                     "<code>python cli.py collect</code>, затем <code>score</code> и <code>letters</code>.</td></tr>")
+        parts.append("<tr><td colspan='9'>Ни одной вакансии по фильтру. Соберите вакансии "
+                     "кнопкой выше, затем нажмите «Оценить»; порог можно снизить в фильтре.</td></tr>")
     parts.append("</table></main></body></html>")
     return "".join(parts)
 
@@ -237,8 +283,11 @@ def _queries():
     return matching.build_queries(get_settings().profile)
 
 
-def run_action(kind, conn, limit=None):
-    """Выполняет действие из веб-интерфейса: collect / score / letters. Возвращает отчёт."""
+def run_action(kind, conn, limit=None, area=None):
+    """Выполняет действие из веб-интерфейса: collect / score / letters. Возвращает отчёт.
+
+    area — id региона hh для сбора (пусто — регионы из настроек, по умолчанию вся Россия).
+    """
     s = get_settings()
 
     if kind == "collect":
@@ -248,11 +297,15 @@ def run_action(kind, conn, limit=None):
             queries = queries[:s.collect_queries]
         if not queries:
             return "нет поисковых запросов: заполните config/queries.txt"
-        saved, found, source, notes = jobs.collect_queries(conn, queries, s, limit=lim)
+        area_ids = [int(area)] if str(area or "").strip().isdigit() else None
+        saved, found, source, notes = jobs.collect_queries(conn, queries, s, limit=lim,
+                                                           area_ids=area_ids)
+        where = areas.name_of(area_ids[0]) if area_ids else "вся Россия"
         storage.log_event(conn, "collect", {"queries": queries, "saved": saved,
-                                            "found": found, "source": source, "from": "web"})
-        report = "собрано вакансий: %d из %d найденных (источник: %s, запросов: %d, лимит: %d)" % (
-            saved, found, source, len(queries), lim)
+                                            "found": found, "source": source,
+                                            "area": where, "from": "web"})
+        report = "собрано вакансий: %d из %d найденных (источник: %s, запросов: %d, " \
+                 "лимит: %d, регион: %s)" % (saved, found, source, len(queries), lim, where)
         if notes:
             report += "; " + "; ".join(notes[:3])
         return report
@@ -373,7 +426,9 @@ class Handler(BaseHTTPRequestHandler):
                 threshold = int(qs.get("threshold", [get_settings().score_threshold])[0])
                 msg = qs.get("msg", [""])[0]
                 area = qs.get("area", [""])[0]
-                self._send(render_index(conn, threshold, limit=50, msg=msg, area=area))
+                region = qs.get("region", [""])[0]
+                self._send(render_index(conn, threshold, limit=50, msg=msg, area=area,
+                                        region=region))
             elif path == "/funnel":
                 qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
                 days = qs.get("days", [None])[0]
@@ -432,7 +487,9 @@ class Handler(BaseHTTPRequestHandler):
                                                  urllib.parse.quote(msg)))
             elif path.startswith("/run/"):
                 kind = path.split("/")[2]
-                report = run_action(kind, conn)
+                form = self._form()
+                area = (form.get("area") or [""])[0]
+                report = run_action(kind, conn, area=area)
                 self._redirect("/?msg=" + urllib.parse.quote(report))
             else:
                 self._send("not found", status=404)
@@ -444,6 +501,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def run(host="127.0.0.1", port=8765):
+    areas.ensure()  # справочник субъектов РФ для фильтра «регион»
     httpd = ThreadingHTTPServer((host, port), Handler)
     print("hh-assistant: http://%s:%d  (Ctrl+C для остановки)" % (host, port))
     httpd.serve_forever()

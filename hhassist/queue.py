@@ -31,22 +31,39 @@ def cooldown_companies(conn, days=None):
     return cooled
 
 
-def next_batch(conn, threshold=55, limit=20, only_new=True, cooldown_days=None):
-    """Вакансии для работы: оценка не ниже порога и ещё не отмеченные отправленными."""
+def next_batch(conn, threshold=55, limit=20, only_new=True, cooldown_days=None,
+               region="", area=""):
+    """Вакансии для работы: оценка не ниже порога и ещё не отмеченные отправленными.
+
+    region — субъект РФ, area — город. Фильтры применяются в SQL, а не после
+    выборки: раньше фильтр по городу резал уже урезанную по порогу пачку, и
+    страница выглядела пустой.
+    """
     cooled = cooldown_companies(conn, cooldown_days)
-    sql = """SELECT v.id, v.title, v.company, v.url, v.work_format, v.experience, v.area,
-                    v.salary_from, v.salary_to, v.currency, s.score, s.verdict, s.reasons,
-                    l.text AS letter,
+    sql = """SELECT v.id, v.title, v.company, v.url, v.work_format, v.experience,
+                    v.area, v.region, v.salary_from, v.salary_to, v.currency,
+                    s.score, s.verdict, s.reasons, l.text AS letter,
                     (SELECT COUNT(*) FROM applications a WHERE a.vacancy_id = v.id) AS applied
              FROM vacancies v
              LEFT JOIN scores s ON s.vacancy_id = v.id
              LEFT JOIN letters l ON l.vacancy_id = v.id
              WHERE COALESCE(s.score, 0) >= ?"""
+    params = [threshold]
     if only_new:
         sql += " AND (SELECT COUNT(*) FROM applications a WHERE a.vacancy_id = v.id) = 0"
+    if region:
+        # старые строки собраны до появления region: сравниваем ещё и с городом,
+        # иначе вакансии с area='Москва' выпадают из фильтра «Москва»
+        sql += (" AND (COALESCE(v.region, '') = ?"
+                " OR (COALESCE(v.region, '') = '' AND COALESCE(v.area, '') = ?))")
+        params.extend([region, region])
+    if area:
+        sql += " AND COALESCE(v.area, '') = ?"
+        params.append(area)
     sql += " ORDER BY COALESCE(s.score, 0) DESC, v.created_at DESC LIMIT ?"
     # берём с запасом: часть строк отсеют стоп-лист и кулдаун компаний
-    rows = conn.execute(sql, (threshold, limit * 3 if cooled else limit)).fetchall()
+    params.append(limit * 3 if cooled else limit)
+    rows = conn.execute(sql, params).fetchall()
     return _drop_cooled(_drop_excluded(rows), cooled)[:limit]
 
 

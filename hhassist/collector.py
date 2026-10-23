@@ -98,22 +98,38 @@ def search_ids(query, area=1, pages=1, per_page=50, pause=1.5, remote=False):
 
 
 def _area(html_text):
-    """Регион вакансии: JSON-блок area -> data-qa-локация -> сырой адрес."""
+    """(город, id региона, субъект РФ) вакансии.
+
+    Основной источник — JSON-LD JobPosting: `jobLocation.address.addressLocality`
+    (город) и `addressRegion` (субъект). Старый JSON-блок `"area": {"id", "name"}`
+    и разметка `data-qa` оставлены как фолбэки: hh меняет разметку без предупреждения.
+    """
+    city = region = ""
+    area_id = ""
+    m = re.search(r'"addressLocality"\s*:\s*"([^"]+)"', html_text)
+    if m:
+        city = html_lib.unescape(m.group(1))[:120]
+    m = re.search(r'"addressRegion"\s*:\s*"([^"]+)"', html_text)
+    if m:
+        region = html_lib.unescape(m.group(1))[:120]
     m = re.search(r'"area"\s*:\s*\{\s*"id"\s*:\s*"?(\d+)"?\s*,\s*"name"\s*:\s*"([^"]+)"',
                   html_text)
     if m:
-        return html_lib.unescape(m.group(2))[:120], m.group(1)
-    name = clean(_find(html_text, r'data-qa="vacancy-view-location"[^>]*>(.*?)</span>'))
-    if not name:
-        name = clean(_find(html_text, r'data-qa="vacancy-view-raw-address"[^>]*>(.*?)</span>'))
-        name = name.split(",")[0].strip()
-    return name[:120], ""
+        area_id = m.group(1)
+        if not city:
+            city = html_lib.unescape(m.group(2))[:120]
+    if not city:
+        city = clean(_find(html_text, r'data-qa="vacancy-view-location"[^>]*>(.*?)</span>'))
+    if not city:
+        city = clean(_find(html_text, r'data-qa="vacancy-view-raw-address"[^>]*>(.*?)</span>'))
+        city = city.split(",")[0].strip()
+    return city[:120], area_id, region[:120]
 
 
 def parse_vacancy(html_text, vacancy_id):
     """Разбирает карточку вакансии в нормализованный словарь."""
     head = clean(html_text[:120000])[:4000]
-    area, area_id = _area(html_text)
+    area, area_id, region = _area(html_text)
 
     title = clean(_find(html_text, r'data-qa="vacancy-title"[^>]*>(.*?)</h1>'))
     if not title:
@@ -200,6 +216,7 @@ def parse_vacancy(html_text, vacancy_id):
         "skills": skills,
         "area": area,
         "area_id": area_id,
+        "region": region,
         "source": "html",
     }
 

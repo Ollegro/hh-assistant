@@ -1,7 +1,7 @@
 @echo off
 chcp 65001 >nul
 title hh-assistant: тесты и регресс
-rem Run the unittest suite, then the health checks and the DB stats.
+rem Тесты, проверки сервера и статистика базы — в один отчёт out\regress.txt.
 cd /d "%~dp0"
 set PYTHONUTF8=1
 set PYTHONIOENCODING=utf-8
@@ -20,5 +20,5 @@ python tools\run_hh_assistant.py stats >> "%REPORT%" 2>&1
 type "%REPORT%"
 echo.
 echo Отчёт сохранён: %REPORT%
-echo Ожидается: Ran 143 tests ... OK, проверки сервера зелёные.
+echo Ожидается: Ran 175 tests ... OK, проверки сервера зелёные.
 pause

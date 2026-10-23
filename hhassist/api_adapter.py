@@ -98,12 +98,17 @@ def _description(item, limit=4000):
 
 
 def _area(item):
-    """(название региона, id региона) из item["area"]."""
+    """(название региона, id региона, субъект РФ) из item["area"]/item["address"]."""
     area = item.get("area") or {}
+    address = item.get("address") or {}
+    region = ""
+    if isinstance(address, dict):
+        region = _text(address.get("region")) or _text(address.get("city"))
     if isinstance(area, dict):
         vid = area.get("id")
-        return _text(area.get("name"))[:120], "" if vid is None else _text(str(vid))
-    return _text(area)[:120], ""
+        return (_text(area.get("name"))[:120], "" if vid is None else _text(str(vid)),
+                region[:120])
+    return _text(area)[:120], "", region[:120]
 
 
 def vacancy_from_api(item):
@@ -113,7 +118,7 @@ def vacancy_from_api(item):
     employer = item.get("employer") or {}
     company = _text(employer.get("name")) if isinstance(employer, dict) else ""
     salary_from, salary_to, currency = _salary(item)
-    area, area_id = _area(item)
+    area, area_id, region = _area(item)
     return {
         "id": vid,
         "title": _text(item.get("name")),
@@ -129,6 +134,7 @@ def vacancy_from_api(item):
         "skills": _skills(item),
         "area": area,
         "area_id": area_id,
+        "region": region,
         "source": "api",
     }
 

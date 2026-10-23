@@ -23,11 +23,12 @@ def vacancy_dict(row):
     return v
 
 
-def collect_queries(conn, queries, settings, limit=None, pages=None, on_item=None):
+def collect_queries(conn, queries, settings, limit=None, pages=None, on_item=None,
+                    area_ids=None):
     """Собирает вакансии по всем запросам. Возвращает (saved, found, source, notes)."""
     limit = settings.collect_limit if limit is None else limit
     pages = settings.collect_pages if pages is None else pages
-    areas = list(getattr(settings, "collect_areas", None) or [113])
+    areas = list(area_ids or getattr(settings, "collect_areas", None) or [113])
     refresh_days = int(getattr(settings, "collect_refresh_days", 0) or 0)
     remote = bool(getattr(settings, "collect_remote", False))
     # инкрементальный сбор: недавно виденные вакансии повторно не скачиваем

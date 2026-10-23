@@ -12,12 +12,14 @@ import os
 import sys
 import time
 
-from hhassist import analytics, collector, hh_api, jobs, letters, llm, queue, storage, web
+from hhassist import (analytics, areas, collector, hh_api, jobs, letters, llm, queue, storage,
+                      web)
 from hhassist.config import BASE, ensure_dirs, get_settings, parse_areas
 
 
 def cmd_collect(args):
     ensure_dirs()
+    areas.ensure()  # справочник регионов: нужен фильтрам и выбору региона в вебе
     conn = storage.connect()
     s = get_settings()
     queries = list(args.query)
@@ -28,20 +30,21 @@ def cmd_collect(args):
         print("укажите --query или --query-file")
         conn.close()
         return 1
-    areas = parse_areas(args.areas) if args.areas else ([args.area] if args.area else s.collect_areas)
+    area_ids = parse_areas(args.areas) if args.areas else (
+        [args.area] if args.area else s.collect_areas)
     refresh_days = 0 if args.force else (
         s.collect_refresh_days if args.refresh_days is None else args.refresh_days)
     remote = args.remote or s.collect_remote
     known = storage.seen_index(conn) if refresh_days else {}
     print("регионы: %s · обновлять старше %d дн. · удалёнка: %s" % (
-        ", ".join(str(a) for a in areas), refresh_days, "да" if remote else "нет"))
+        ", ".join(str(a) for a in area_ids), refresh_days, "да" if remote else "нет"))
     total = 0
     sources = {}
     for query in queries:
         print("поиск: %s" % query)
         try:
             vacancies, info = collector.collect(
-                query, area=areas, pages=args.pages, per_page=args.per_page,
+                query, area=area_ids, pages=args.pages, per_page=args.per_page,
                 limit=args.limit, source=args.source, details=not args.no_details,
                 known=known, refresh_days=refresh_days, remote=remote,
             )
@@ -70,7 +73,8 @@ def cmd_collect(args):
             print("  + %s | %s | %s | %s" % (v["id"], v["title"][:60], v["company"][:40],
                                              v.get("area") or "—"))
         conn.commit()
-    storage.log_event(conn, "collect", {"queries": args.query, "saved": total, "areas": areas,
+    storage.log_event(conn, "collect", {"queries": args.query, "saved": total,
+                                        "areas": area_ids,
                                         "ua": s.user_agent, "sources": sources})
     print("сохранено вакансий: %d" % total)
     conn.close()
@@ -215,6 +219,15 @@ def cmd_mark(args):
     return 0
 
 
+def cmd_areas(args):
+    """Справочник регионов hh.ru: список субъектов РФ для фильтров и сбора."""
+    items = areas.ensure(force=args.refresh)
+    print("регионов: %d (кэш: %s)" % (len(items), areas.CACHE_PATH))
+    for area_id, name in items:
+        print("%6s  %s" % (area_id, name))
+    return 0
+
+
 def cmd_reset(args):
     from hhassist.config import DATA_DIR
     db = os.path.join(DATA_DIR, "hhassist.sqlite3")
@@ -331,6 +344,10 @@ def main(argv=None):
     p = sub.add_parser("reset", help="удалить базу данных (для пересбора)")
     p.add_argument("--yes", action="store_true")
     p.set_defaults(func=cmd_reset)
+
+    p = sub.add_parser("areas", help="справочник регионов hh.ru (субъекты РФ)")
+    p.add_argument("--refresh", action="store_true", help="загрузить заново с api.hh.ru")
+    p.set_defaults(func=cmd_areas)
 
     p = sub.add_parser("list", help="показать собранные вакансии")
     p.add_argument("--limit", type=int, default=30)
