@@ -83,7 +83,10 @@ CREATE TABLE IF NOT EXISTS vacancies (
     description TEXT,
     skills TEXT,
     source TEXT,
-    created_at TEXT
+    created_at TEXT,
+    area TEXT DEFAULT '',
+    area_id TEXT DEFAULT '',
+    seen_at TEXT
 );
 CREATE TABLE IF NOT EXISTS scores (
     vacancy_id TEXT PRIMARY KEY,
@@ -96,7 +99,9 @@ CREATE TABLE IF NOT EXISTS letters (
     vacancy_id TEXT PRIMARY KEY,
     text TEXT,
     model TEXT,
-    updated_at TEXT
+    updated_at TEXT,
+    edited INTEGER DEFAULT 0,
+    edited_at TEXT
 );
 CREATE TABLE IF NOT EXISTS applications (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -119,7 +124,41 @@ def connect():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
+    _migrate(conn)
     return conn
+
+
+# Колонки, добавленные после первого релиза: старые базы догоняем через ALTER.
+# (CREATE TABLE IF NOT EXISTS не меняет уже созданную таблицу.)
+MIGRATIONS = {
+    "vacancies": (("area", "TEXT DEFAULT ''"), ("area_id", "TEXT DEFAULT ''"),
+                  ("seen_at", "TEXT")),
+    "letters": (("edited", "INTEGER DEFAULT 0"), ("edited_at", "TEXT")),
+}
+
+
+def _migrate(conn):
+    """Добавляет недостающие колонки в существующую базу. Идемпотентно.
+
+    Пишет в базу только когда колонки действительно не хватает: иначе каждый
+    `connect()` пытался бы открыть транзакцию и мешал соседним соединениям.
+    """
+    changed = False
+    for table, columns in MIGRATIONS.items():
+        have = {row[1] for row in conn.execute("PRAGMA table_info(%s)" % table)}
+        if not have:  # таблицы ещё нет — её создал SCHEMA
+            continue
+        added = False
+        for name, ddl in columns:
+            if name not in have:
+                conn.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, name, ddl))
+                added = True
+        if added and table == "vacancies":
+            # старые строки не имеют seen_at — считаем, что видели их при создании
+            conn.execute("UPDATE vacancies SET seen_at = created_at WHERE seen_at IS NULL")
+        changed = changed or added
+    if changed:
+        conn.commit()
 
 
 def now():
@@ -129,15 +168,18 @@ def now():
 def upsert_vacancy(conn, v, commit=True):
     conn.execute(
         """INSERT INTO vacancies (id, title, company, url, salary_from, salary_to, currency,
-               work_format, experience, published_at, description, skills, source, created_at)
+               work_format, experience, published_at, description, skills, source, created_at,
+               area, area_id, seen_at)
            VALUES (:id, :title, :company, :url, :salary_from, :salary_to, :currency,
-               :work_format, :experience, :published_at, :description, :skills, :source, :created_at)
+               :work_format, :experience, :published_at, :description, :skills, :source,
+               :created_at, :area, :area_id, :seen_at)
            ON CONFLICT(id) DO UPDATE SET
                title=excluded.title, company=excluded.company, url=excluded.url,
                salary_from=excluded.salary_from, salary_to=excluded.salary_to,
                currency=excluded.currency, work_format=excluded.work_format,
                experience=excluded.experience, published_at=excluded.published_at,
-               description=excluded.description, skills=excluded.skills""",
+               description=excluded.description, skills=excluded.skills,
+               area=excluded.area, area_id=excluded.area_id, seen_at=excluded.seen_at""",
         {
             "id": v.get("id"),
             "title": v.get("title", ""),
@@ -153,6 +195,9 @@ def upsert_vacancy(conn, v, commit=True):
             "skills": json.dumps(v.get("skills", []), ensure_ascii=False),
             "source": v.get("source", "html"),
             "created_at": now(),
+            "area": v.get("area", "") or "",
+            "area_id": str(v.get("area_id") or ""),
+            "seen_at": now(),
         },
     )
     if commit:
@@ -172,13 +217,15 @@ def save_score(conn, vacancy_id, score, verdict, reasons, commit=True):
         conn.commit()
 
 
-def save_letter(conn, vacancy_id, text, model="", commit=True):
+def save_letter(conn, vacancy_id, text, model="", commit=True, edited=False):
+    """Пишет письмо. edited=True — текст правил человек (правка не затирается генерацией)."""
     conn.execute(
-        """INSERT INTO letters (vacancy_id, text, model, updated_at)
-           VALUES (?, ?, ?, ?)
+        """INSERT INTO letters (vacancy_id, text, model, updated_at, edited, edited_at)
+           VALUES (?, ?, ?, ?, ?, ?)
            ON CONFLICT(vacancy_id) DO UPDATE SET
-               text=excluded.text, model=excluded.model, updated_at=excluded.updated_at""",
-        (vacancy_id, text, model, now()),
+               text=excluded.text, model=excluded.model, updated_at=excluded.updated_at,
+               edited=excluded.edited, edited_at=excluded.edited_at""",
+        (vacancy_id, text, model, now(), 1 if edited else 0, now() if edited else None),
     )
     if commit:
         conn.commit()
@@ -265,7 +312,8 @@ def pending_vacancies(conn, min_score=None, limit=50):
 
 def vacancy_with_letter(conn, vacancy_id):
     return conn.execute(
-        """SELECT v.*, s.score, s.verdict, s.reasons, l.text AS letter
+        """SELECT v.*, s.score, s.verdict, s.reasons, l.text AS letter,
+                  COALESCE(l.edited, 0) AS letter_edited, l.edited_at AS letter_edited_at
            FROM vacancies v
            LEFT JOIN scores s ON s.vacancy_id = v.id
            LEFT JOIN letters l ON l.vacancy_id = v.id
@@ -280,6 +328,42 @@ def sent_today(conn):
         "SELECT COUNT(*) AS c FROM applications WHERE substr(sent_at, 1, 10) = ?", (today,)
     ).fetchone()
     return row["c"] if row else 0
+
+
+def seen_index(conn):
+    """{vacancy_id: время последнего сбора} — для инкрементального сбора."""
+    return {row["id"]: row["seen_at"] or row["created_at"] or ""
+            for row in conn.execute("SELECT id, seen_at, created_at FROM vacancies")}
+
+
+def last_event(conn, kind):
+    """Последнее событие журнала указанного вида или None."""
+    row = conn.execute("SELECT ts, payload FROM events WHERE kind = ? ORDER BY id DESC LIMIT 1",
+                       (kind,)).fetchone()
+    if not row:
+        return None
+    try:
+        payload = json.loads(row["payload"] or "{}")
+    except ValueError:
+        payload = {}
+    return {"ts": row["ts"], "payload": payload}
+
+
+def area_counts(conn):
+    """[(регион, сколько вакансий)] — для фильтра на главной странице."""
+    return conn.execute(
+        """SELECT COALESCE(area, '') AS area, COUNT(*) AS cnt FROM vacancies
+           GROUP BY COALESCE(area, '') ORDER BY cnt DESC"""
+    ).fetchall()
+
+
+def sent_companies_since(conn, cutoff):
+    """[(компания, дата отклика)] — отклики не раньше cutoff (ISO-дата)."""
+    labels = statuses_for(SENT_KINDS)
+    sql = """SELECT v.company, a.sent_at FROM applications a
+             JOIN vacancies v ON v.id = a.vacancy_id
+             WHERE a.status IN (%s) AND substr(a.sent_at, 1, 10) >= ?""" % ",".join("?" * len(labels))
+    return conn.execute(sql, labels + (cutoff,)).fetchall()
 
 
 def stats(conn):

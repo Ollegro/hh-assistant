@@ -2,12 +2,36 @@
 """Конфигурация приложения: профиль соискателя, фильтры, лимиты, ключи LLM."""
 import json
 import os
+import re
 from dataclasses import dataclass, field
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(BASE, "data")
 PROFILE_PATH = os.path.join(BASE, "config", "profile.json")
 ENV_PATH = os.path.join(BASE, ".env")
+
+# Идентификаторы регионов hh.ru: полный справочник — https://api.hh.ru/areas/113
+AREA_ALIASES = {"russia": 113, "rf": 113, "moscow": 1, "msk": 1, "spb": 2, "piter": 2}
+DEFAULT_AREAS = (113,)
+
+
+def parse_areas(value, default=DEFAULT_AREAS):
+    """'113' / '1,2' / 'moscow,spb' -> [1, 2]. Пусто или мусор -> default."""
+    items = value if isinstance(value, (list, tuple)) else re.split(r"[,;\s]+", str(value or ""))
+    out = []
+    for item in items:
+        item = str(item).strip().lower()
+        if not item:
+            continue
+        if item in AREA_ALIASES:
+            num = AREA_ALIASES[item]
+        elif item.isdigit():
+            num = int(item)
+        else:
+            continue
+        if num not in out:
+            out.append(num)
+    return out or list(default)
 
 DEFAULT_PROFILE = {
     "name": "Олег Гуцев",
@@ -76,6 +100,10 @@ class Settings:
     collect_limit: int = 20
     collect_pages: int = 1
     collect_queries: int = 0
+    collect_areas: list = field(default_factory=lambda: [113])
+    collect_remote: bool = False
+    collect_refresh_days: int = 3
+    company_cooldown_days: int = 10
     llm_provider: str = ""
     llm_api_key: str = ""
     llm_model: str = ""
@@ -130,6 +158,10 @@ def get_settings():
         collect_limit=int(env.get("COLLECT_LIMIT", 20)),
         collect_pages=int(env.get("COLLECT_PAGES", 1)),
         collect_queries=int(env.get("COLLECT_QUERIES", 0)),
+        collect_areas=parse_areas(env.get("COLLECT_AREAS", "")),
+        collect_remote=env.get("COLLECT_REMOTE", "").strip().lower() in ("1", "true", "yes", "on"),
+        collect_refresh_days=int(env.get("COLLECT_REFRESH_DAYS", 3)),
+        company_cooldown_days=int(env.get("COMPANY_COOLDOWN_DAYS", 10)),
         llm_provider=env.get("LLM_PROVIDER", ""),
         llm_api_key=env.get("LLM_API_KEY", ""),
         llm_model=env.get("LLM_MODEL", ""),

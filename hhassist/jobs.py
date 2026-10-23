@@ -9,7 +9,7 @@
 import json
 import os
 
-from . import collector, letters as letters_mod, scoring, storage
+from . import collector, letters as letters_mod, matching, scoring, storage
 
 
 def vacancy_dict(row):
@@ -27,29 +27,43 @@ def collect_queries(conn, queries, settings, limit=None, pages=None, on_item=Non
     """Собирает вакансии по всем запросам. Возвращает (saved, found, source, notes)."""
     limit = settings.collect_limit if limit is None else limit
     pages = settings.collect_pages if pages is None else pages
-    saved = found = 0
+    areas = list(getattr(settings, "collect_areas", None) or [113])
+    refresh_days = int(getattr(settings, "collect_refresh_days", 0) or 0)
+    remote = bool(getattr(settings, "collect_remote", False))
+    # инкрементальный сбор: недавно виденные вакансии повторно не скачиваем
+    known = storage.seen_index(conn) if refresh_days else {}
+    saved = found = skipped = 0
     source = "html"
     notes = []
     for query in queries:
         try:
-            vacancies, info = collector.collect(query, area=1, pages=pages,
-                                                per_page=50, limit=limit)
+            vacancies, info = collector.collect(query, area=areas, pages=pages,
+                                                per_page=50, limit=limit, known=known,
+                                                refresh_days=refresh_days, remote=remote)
         except Exception as exc:  # сеть, блокировка, парсер — один запрос не рушит прогон
             notes.append("«%s»: поиск не удался (%s)" % (query, exc))
             storage.log_event(conn, "collect_error", {"query": query, "error": str(exc)})
             continue
         source = info["source"]
         found += info.get("found", 0)
+        skipped += info.get("skipped", 0)
         if info["fallback"]:
             notes.append("откат на HTML: %s" % info["reason"])
             storage.log_event(conn, "source_fallback",
                               {"query": query, "reason": info["reason"]})
+        health = info.get("quality") or {}
+        if health.get("state") in ("suspect", "empty"):
+            storage.log_event(conn, "parser_suspect",
+                              {"query": query, "source": info["source"], "quality": health})
+            notes.append("«%s»: похоже, парсер сломался (%s)" % (query, health))
         for v in vacancies:
             storage.upsert_vacancy(conn, v, commit=False)
             saved += 1
             if on_item:
                 on_item(v)
     conn.commit()
+    if skipped:
+        notes.append("уже в базе, повторно не скачивали: %d" % skipped)
     return saved, found, source, notes
 
 
@@ -74,15 +88,27 @@ def score_pending(conn, settings, force=False, on_item=None):
 
 
 def letter_vacancies(conn, threshold, limit=50, force=False):
-    """Вакансии выше порога, для которых ещё нет письма (force=True — все)."""
+    """Вакансии выше порога, для которых ещё нет письма (force=True — все).
+
+    Письма, правленные человеком (letters.edited=1), не перегенерируются никогда,
+    а компании, куда откликались меньше COMPANY_COOLDOWN_DAYS дней назад, пропускаются.
+    """
+    from . import queue
+
     sql = """SELECT v.* FROM vacancies v
              LEFT JOIN scores sc ON sc.vacancy_id = v.id
              LEFT JOIN letters l ON l.vacancy_id = v.id
-             WHERE COALESCE(sc.score, 0) >= ?"""
+             WHERE COALESCE(sc.score, 0) >= ? AND COALESCE(l.edited, 0) = 0"""
     if not force:
         sql += " AND l.text IS NULL"
     sql += " ORDER BY COALESCE(sc.score, 0) DESC, v.created_at DESC LIMIT ?"
-    return conn.execute(sql, (threshold, limit)).fetchall()
+    cooled = queue.cooldown_companies(conn)
+    # с запасом по строке: часть вакансий отсеет кулдаун компаний
+    rows = conn.execute(sql, (threshold, limit * 2 if cooled else limit)).fetchall()
+    if cooled:
+        rows = [r for r in rows
+                if matching.normalize(r["company"]) not in cooled]
+    return rows[:limit]
 
 
 def make_letters(conn, settings, threshold=None, limit=50, force=False, on_item=None):

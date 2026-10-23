@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Очередь откликов: выборка подходящих вакансий, лимиты, статусы, экспорт писем."""
 import os
+from datetime import date, timedelta
 
 from . import matching, storage
 from .config import get_settings
@@ -12,9 +13,28 @@ def can_send_today(conn, daily_limit):
     return max(0, daily_limit - sent)
 
 
-def next_batch(conn, threshold=55, limit=20, only_new=True):
+def cooldown_companies(conn, days=None):
+    """Компании, куда откликались меньше N дней назад: {нормализованное имя: дата}.
+
+    Правило «одна компания — один отклик за период»: остальные вакансии этой
+    компании прячутся из очереди, пока срок не истечёт. 0 — правило выключено.
+    """
+    days = get_settings().company_cooldown_days if days is None else days
+    if not days:
+        return {}
+    cutoff = (date.today() - timedelta(days=int(days))).isoformat()
+    cooled = {}
+    for row in storage.sent_companies_since(conn, cutoff):
+        name = matching.normalize(row["company"])
+        if name:
+            cooled.setdefault(name, row["sent_at"])
+    return cooled
+
+
+def next_batch(conn, threshold=55, limit=20, only_new=True, cooldown_days=None):
     """Вакансии для работы: оценка не ниже порога и ещё не отмеченные отправленными."""
-    sql = """SELECT v.id, v.title, v.company, v.url, v.work_format, v.experience,
+    cooled = cooldown_companies(conn, cooldown_days)
+    sql = """SELECT v.id, v.title, v.company, v.url, v.work_format, v.experience, v.area,
                     v.salary_from, v.salary_to, v.currency, s.score, s.verdict, s.reasons,
                     l.text AS letter,
                     (SELECT COUNT(*) FROM applications a WHERE a.vacancy_id = v.id) AS applied
@@ -25,8 +45,24 @@ def next_batch(conn, threshold=55, limit=20, only_new=True):
     if only_new:
         sql += " AND (SELECT COUNT(*) FROM applications a WHERE a.vacancy_id = v.id) = 0"
     sql += " ORDER BY COALESCE(s.score, 0) DESC, v.created_at DESC LIMIT ?"
-    rows = conn.execute(sql, (threshold, limit)).fetchall()
-    return _drop_excluded(rows)
+    # берём с запасом: часть строк отсеют стоп-лист и кулдаун компаний
+    rows = conn.execute(sql, (threshold, limit * 3 if cooled else limit)).fetchall()
+    return _drop_cooled(_drop_excluded(rows), cooled)[:limit]
+
+
+def _drop_cooled(rows, cooled):
+    """Убирает компании из кулдауна и дубли одной компании внутри пачки."""
+    if not cooled:
+        return rows
+    seen = set()
+    out = []
+    for row in rows:
+        name = matching.normalize(row["company"])
+        if name in cooled or name in seen:
+            continue
+        seen.add(name)
+        out.append(row)
+    return out
 
 
 def _drop_excluded(rows):

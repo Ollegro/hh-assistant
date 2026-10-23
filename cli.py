@@ -13,7 +13,7 @@ import sys
 import time
 
 from hhassist import analytics, collector, hh_api, jobs, letters, llm, queue, storage, web
-from hhassist.config import BASE, ensure_dirs, get_settings
+from hhassist.config import BASE, ensure_dirs, get_settings, parse_areas
 
 
 def cmd_collect(args):
@@ -28,36 +28,75 @@ def cmd_collect(args):
         print("укажите --query или --query-file")
         conn.close()
         return 1
+    areas = parse_areas(args.areas) if args.areas else ([args.area] if args.area else s.collect_areas)
+    refresh_days = 0 if args.force else (
+        s.collect_refresh_days if args.refresh_days is None else args.refresh_days)
+    remote = args.remote or s.collect_remote
+    known = storage.seen_index(conn) if refresh_days else {}
+    print("регионы: %s · обновлять старше %d дн. · удалёнка: %s" % (
+        ", ".join(str(a) for a in areas), refresh_days, "да" if remote else "нет"))
     total = 0
     sources = {}
     for query in queries:
         print("поиск: %s" % query)
         try:
             vacancies, info = collector.collect(
-                query, area=args.area, pages=args.pages, per_page=args.per_page,
+                query, area=areas, pages=args.pages, per_page=args.per_page,
                 limit=args.limit, source=args.source, details=not args.no_details,
+                known=known, refresh_days=refresh_days, remote=remote,
             )
         except Exception as e:
             print("  ошибка поиска: %s" % e)
             storage.log_event(conn, "collect_error", {"query": query, "error": str(e)})
             continue
         sources[info["source"]] = sources.get(info["source"], 0) + 1
-        print("  найдено: %d, скачано: %d (источник: %s)" % (
-            info["found"], info.get("taken", len(vacancies)), info["source"]))
+        print("  найдено: %d, новых: %d, обновлено: %d, уже в базе: %d (источник: %s)" % (
+            info["found"], info.get("new", 0), info.get("refreshed", 0),
+            info.get("skipped", 0), info["source"]))
         if info["fallback"]:
             print("  откат на HTML-парсер: %s" % info["reason"])
             storage.log_event(conn, "source_fallback",
                               {"query": query, "reason": info["reason"]})
+        health = info.get("quality") or {}
+        if health.get("state") in ("suspect", "empty"):
+            print("  внимание: похоже, парсер сломался (%s)" % health)
+            storage.log_event(conn, "parser_suspect",
+                              {"query": query, "source": info["source"], "quality": health})
         for err in info["errors"]:
             print("  %s: ошибка загрузки (%s)" % (err["id"], err["error"]))
         for v in vacancies:
             storage.upsert_vacancy(conn, v, commit=False)
             total += 1
-            print("  + %s | %s | %s" % (v["id"], v["title"][:60], v["company"][:40]))
+            print("  + %s | %s | %s | %s" % (v["id"], v["title"][:60], v["company"][:40],
+                                             v.get("area") or "—"))
         conn.commit()
-    storage.log_event(conn, "collect", {"queries": args.query, "saved": total,
+    storage.log_event(conn, "collect", {"queries": args.query, "saved": total, "areas": areas,
                                         "ua": s.user_agent, "sources": sources})
     print("сохранено вакансий: %d" % total)
+    conn.close()
+
+
+def cmd_letter(args):
+    """Показать или заменить текст письма (правка вручную, не перезаписывается генерацией)."""
+    conn = storage.connect()
+    row = storage.vacancy_with_letter(conn, args.id)
+    if not row:
+        print("вакансия %s не найдена" % args.id)
+        conn.close()
+        return 1
+    if args.file:
+        with open(args.file, encoding="utf-8") as f:
+            text = f.read().replace("\r\n", "\n").strip()
+        if not text:
+            print("файл пустой — письмо не изменено")
+            conn.close()
+            return 1
+        storage.save_letter(conn, args.id, text, model="manual", edited=True)
+        storage.log_event(conn, "letter_edit", {"vacancy_id": args.id, "chars": len(text),
+                                                "from": "cli"})
+        print("письмо сохранено: символов %d" % len(text))
+    else:
+        print(row["letter"] or "(письма нет)")
     conn.close()
 
 
@@ -230,7 +269,15 @@ def main(argv=None):
                    help="файл со списком запросов (по одному в строке, UTF-8) — удобно для русских запросов")
     p.add_argument("--pages", type=int, default=1)
     p.add_argument("--per-page", type=int, default=50)
-    p.add_argument("--area", type=int, default=1, help="1 = Москва")
+    p.add_argument("--area", type=int, default=None, help="один регион hh (1 = Москва)")
+    p.add_argument("--areas", default=None,
+                   help="регионы через запятую: 113,1 или moscow,spb (по умолчанию COLLECT_AREAS=113)")
+    p.add_argument("--remote", action="store_true", help="только удалёнка (COLLECT_REMOTE)")
+    p.add_argument("--refresh-days", type=int, default=None,
+                   help="не скачивать повторно вакансии, виденные меньше N дней назад "
+                        "(COLLECT_REFRESH_DAYS, по умолчанию 3)")
+    p.add_argument("--force", action="store_true",
+                   help="скачать заново все найденные вакансии (без инкремента)")
     p.add_argument("--limit", type=int, default=50, help="максимум вакансий на запрос")
     p.add_argument("--source", choices=("auto", "api", "html"), default=None,
                    help="источник данных: auto (HH_SOURCE), api или html")
@@ -274,6 +321,12 @@ def main(argv=None):
                    help="sent | reply | invite | reject | skip (можно по-русски: «ответ», «приглашение»)")
     p.add_argument("--note", default="", help="примечание к записи журнала")
     p.set_defaults(func=cmd_mark)
+
+    p = sub.add_parser("letter", help="показать или заменить письмо вакансии (правка вручную)")
+    p.add_argument("id", help="id вакансии")
+    p.add_argument("--file", default=None,
+                   help="файл с новым текстом письма (UTF-8); правка больше не перегенерируется")
+    p.set_defaults(func=cmd_letter)
 
     p = sub.add_parser("reset", help="удалить базу данных (для пересбора)")
     p.add_argument("--yes", action="store_true")

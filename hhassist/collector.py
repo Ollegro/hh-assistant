@@ -9,6 +9,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timedelta
 
 from .config import get_settings
 
@@ -69,8 +70,11 @@ def _find(text, pattern, flags=re.S):
     return m.group(1) if m else ""
 
 
-def search_ids(query, area=1, pages=1, per_page=50, pause=1.5):
-    """Возвращает список id вакансий по поисковому запросу."""
+def search_ids(query, area=1, pages=1, per_page=50, pause=1.5, remote=False):
+    """Возвращает список id вакансий по поисковому запросу.
+
+    area — id региона или список id; remote=True — только удалёнка.
+    """
     ids = []
     for page in range(pages):
         params = {
@@ -80,7 +84,10 @@ def search_ids(query, area=1, pages=1, per_page=50, pause=1.5):
             "items_on_page": per_page,
             "order_by": "publication_time",
         }
-        url = SEARCH_URL + "?" + urllib.parse.urlencode(params)
+        if remote:
+            params["schedule"] = "remote"
+        # doseq=True: несколько регионов уходят как area=1&area=2
+        url = SEARCH_URL + "?" + urllib.parse.urlencode(params, doseq=True)
         html = http_get(url)
         found = re.findall(r"/vacancy/(\d+)", html)
         for vid in found:
@@ -90,9 +97,23 @@ def search_ids(query, area=1, pages=1, per_page=50, pause=1.5):
     return ids
 
 
+def _area(html_text):
+    """Регион вакансии: JSON-блок area -> data-qa-локация -> сырой адрес."""
+    m = re.search(r'"area"\s*:\s*\{\s*"id"\s*:\s*"?(\d+)"?\s*,\s*"name"\s*:\s*"([^"]+)"',
+                  html_text)
+    if m:
+        return html_lib.unescape(m.group(2))[:120], m.group(1)
+    name = clean(_find(html_text, r'data-qa="vacancy-view-location"[^>]*>(.*?)</span>'))
+    if not name:
+        name = clean(_find(html_text, r'data-qa="vacancy-view-raw-address"[^>]*>(.*?)</span>'))
+        name = name.split(",")[0].strip()
+    return name[:120], ""
+
+
 def parse_vacancy(html_text, vacancy_id):
     """Разбирает карточку вакансии в нормализованный словарь."""
     head = clean(html_text[:120000])[:4000]
+    area, area_id = _area(html_text)
 
     title = clean(_find(html_text, r'data-qa="vacancy-title"[^>]*>(.*?)</h1>'))
     if not title:
@@ -177,6 +198,8 @@ def parse_vacancy(html_text, vacancy_id):
         "published_at": published,
         "description": description,
         "skills": skills,
+        "area": area,
+        "area_id": area_id,
         "source": "html",
     }
 
@@ -202,18 +225,24 @@ def to_json(vacancies):
     return json.dumps(vacancies, ensure_ascii=False, indent=1)
 
 
-def collect(query, area=1, pages=1, per_page=50, limit=None, source=None, details=True):
+def collect(query, area=1, pages=1, per_page=50, limit=None, source=None, details=True,
+            known=None, refresh_days=0, remote=False):
     """Собирает вакансии выбранным источником и возвращает (vacancies, info).
 
     source: "auto" (по умолчанию значение HH_SOURCE) — API hh.ru, если настроен токен
     приложения, иначе HTML; при ошибке API в режиме auto — откат на HTML.
-    info = {source, fallback, reason, found, errors} — для журнала событий.
+    area — id региона или список id. remote=True — только удалёнка.
+    known — {vacancy_id: время последнего сбора}: вакансии, собранные меньше
+    refresh_days дней назад, заново не скачиваются (инкрементальный сбор).
+    info = {source, fallback, reason, found, taken, new, refreshed, skipped, errors,
+    quality} — для журнала событий.
     """
     s = get_settings()
     mode = (source or getattr(s, "hh_source", "auto") or "auto").strip().lower()
     if mode not in ("auto", "api", "html"):
         raise ValueError("источник должен быть auto|api|html, получено: %r" % mode)
 
+    skip = _recent_ids(known, refresh_days)
     reason = ""
     if mode in ("auto", "api"):
         # локальный импорт: api_adapter импортирует clean() из этого модуля
@@ -221,8 +250,11 @@ def collect(query, area=1, pages=1, per_page=50, limit=None, source=None, detail
 
         if hh_api.has_token():
             try:
-                items = hh_api.search_vacancies(query, area=area, pages=pages, per_page=per_page)
+                items = hh_api.search_vacancies(query, area=area, pages=pages, per_page=per_page,
+                                                remote=remote)
                 found = len(items)
+                skipped = sum(1 for item in items if str(item.get("id") or "") in skip)
+                items = [item for item in items if str(item.get("id") or "") not in skip]
                 if limit:
                     items = items[:limit]
                 vacancies, errors = [], []
@@ -235,8 +267,8 @@ def collect(query, area=1, pages=1, per_page=50, limit=None, source=None, detail
                         except hh_api.HHApiError as e:
                             errors.append({"id": vid, "error": str(e)})
                     vacancies.append(api_adapter.vacancy_from_api(full))
-                return vacancies, {"source": "api", "fallback": False, "reason": "",
-                                   "found": found, "taken": len(items), "errors": errors}
+                return vacancies, _info("api", False, "", found, len(items), skipped,
+                                        errors, vacancies, known)
             except hh_api.HHApiError as e:
                 if mode == "api":
                     raise
@@ -247,8 +279,10 @@ def collect(query, area=1, pages=1, per_page=50, limit=None, source=None, detail
         else:
             reason = "токен hh не настроен"
 
-    ids = search_ids(query, area=area, pages=pages, per_page=per_page)
+    ids = search_ids(query, area=area, pages=pages, per_page=per_page, remote=remote)
     found = len(ids)
+    skipped = sum(1 for vid in ids if vid in skip)
+    ids = [vid for vid in ids if vid not in skip]
     if limit:
         ids = ids[:limit]
     vacancies, errors = [], []
@@ -257,7 +291,47 @@ def collect(query, area=1, pages=1, per_page=50, limit=None, source=None, detail
             vacancies.append(fetch_vacancy(vid))
         except Exception as e:
             errors.append({"id": vid, "error": "%s: %s" % (type(e).__name__, e)})
-    return vacancies, {"source": "html", "fallback": bool(reason), "reason": reason,
-                       "found": found, "taken": len(ids), "errors": errors}
+    return vacancies, _info("html", bool(reason), reason, found, len(ids), skipped,
+                            errors, vacancies, known)
+
+
+def _recent_ids(known, refresh_days):
+    """id вакансий, собранных меньше refresh_days дней назад: заново не скачиваем."""
+    if not known or not refresh_days:
+        return set()
+    cutoff = (datetime.now() - timedelta(days=int(refresh_days))).isoformat()
+    return {vid for vid, ts in known.items() if ts and ts >= cutoff}
+
+
+def quality(vacancies, taken=None):
+    """Здоровье парсера: ok | suspect | empty | no_results.
+
+    suspect — данные пришли, но разбор похож на сломанный: у большинства вакансий
+    пустой заголовок или подозрительно короткое описание.
+    """
+    taken = len(vacancies) if taken is None else taken
+    if not taken:
+        return {"state": "no_results", "taken": 0, "empty_titles": 0, "short_descriptions": 0}
+    total = len(vacancies)
+    empty_titles = sum(1 for v in vacancies if not (v.get("title") or "").strip())
+    short = sum(1 for v in vacancies if v.get("description") and len(v["description"]) < 100)
+    state = "ok"
+    if not total:
+        state = "empty"
+    elif empty_titles >= 3 and empty_titles * 2 > total:
+        state = "suspect"
+    elif short >= 3 and short * 2 > total:
+        state = "suspect"
+    return {"state": state, "taken": taken, "empty_titles": empty_titles,
+            "short_descriptions": short}
+
+
+def _info(source, fallback, reason, found, taken, skipped, errors, vacancies, known):
+    """info-словарь прогона: источник, счётчики нового/обновлённого, качество разбора."""
+    known = known or {}
+    refreshed = sum(1 for v in vacancies if v.get("id") in known)
+    return {"source": source, "fallback": fallback, "reason": reason, "found": found,
+            "taken": taken, "new": len(vacancies) - refreshed, "refreshed": refreshed,
+            "skipped": skipped, "errors": errors, "quality": quality(vacancies, taken)}
 
 

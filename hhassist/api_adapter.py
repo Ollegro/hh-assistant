@@ -97,6 +97,15 @@ def _description(item, limit=4000):
     return ""
 
 
+def _area(item):
+    """(название региона, id региона) из item["area"]."""
+    area = item.get("area") or {}
+    if isinstance(area, dict):
+        vid = area.get("id")
+        return _text(area.get("name"))[:120], "" if vid is None else _text(str(vid))
+    return _text(area)[:120], ""
+
+
 def vacancy_from_api(item):
     """JSON вакансии hh.ru -> нормализованный словарь приложения."""
     item = item if isinstance(item, dict) else {}
@@ -104,6 +113,7 @@ def vacancy_from_api(item):
     employer = item.get("employer") or {}
     company = _text(employer.get("name")) if isinstance(employer, dict) else ""
     salary_from, salary_to, currency = _salary(item)
+    area, area_id = _area(item)
     return {
         "id": vid,
         "title": _text(item.get("name")),
@@ -117,6 +127,8 @@ def vacancy_from_api(item):
         "published_at": _text(item.get("published_at")),
         "description": _description(item),
         "skills": _skills(item),
+        "area": area,
+        "area_id": area_id,
         "source": "api",
     }
 

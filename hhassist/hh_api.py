@@ -189,7 +189,8 @@ def get(path, params=None, use_cache=True, retries=None, timeout=None):
     if params:
         clean = {k: v for k, v in params.items() if v is not None and v != ""}
         if clean:
-            url += ("&" if "?" in url else "?") + urllib.parse.urlencode(clean)
+            # doseq=True: список area превращается в area=1&area=2 (несколько регионов)
+            url += ("&" if "?" in url else "?") + urllib.parse.urlencode(clean, doseq=True)
     token = app_token()
     attempts = max(1, retries if retries is not None else s.hh_api_retries)
     pause = 1
@@ -240,8 +241,12 @@ def me():
     return get("/me", use_cache=False)
 
 
-def search_vacancies(text=None, area=None, pages=1, per_page=50, pause=None, **filters):
-    """Поиск вакансий: GET /vacancies. Возвращает items (без полного описания)."""
+def search_vacancies(text=None, area=None, pages=1, per_page=50, pause=None, remote=False,
+                     **filters):
+    """Поиск вакансий: GET /vacancies. Возвращает items (без полного описания).
+
+    area — id региона или список id (несколько регионов). remote=True — только удалёнка.
+    """
     s = get_settings()
     per_page = int(per_page)
     pages = int(pages)
@@ -256,6 +261,8 @@ def search_vacancies(text=None, area=None, pages=1, per_page=50, pause=None, **f
     items = []
     for page in range(pages):
         params = {"text": text, "area": area, "page": page, "per_page": per_page}
+        if remote:
+            params["schedule"] = "remote"
         params.update(filters)
         batch = get("/vacancies", params, use_cache=False).get("items") or []
         items.extend(batch)

@@ -57,8 +57,32 @@ def score_class(score):
     return "s-low"
 
 
-def render_index(conn, threshold, limit, msg=""):
-    rows = queue.next_batch(conn, threshold=threshold, limit=limit)
+def parser_warning(conn, hours=24):
+    """Свежее предупреждение «парсер мог сломаться» (не старше hours) или ''."""
+    from datetime import datetime
+
+    event = storage.last_event(conn, "parser_suspect")
+    if not event:
+        return ""
+    try:
+        when = datetime.fromisoformat((event["ts"] or "")[:19])
+    except ValueError:
+        return ""
+    if (datetime.now() - when).total_seconds() > hours * 3600:
+        return ""
+    payload = event["payload"]
+    quality = payload.get("quality") or {}
+    return ("⚠ парсер мог сломаться (запрос «%s», состояние %s: заголовков пусто %s, "
+            "описаний коротко %s, %s)" % (
+                payload.get("query", "—"), quality.get("state", "?"),
+                quality.get("empty_titles", "?"), quality.get("short_descriptions", "?"),
+                (event["ts"] or "")[:16].replace("T", " ")))
+
+
+def render_index(conn, threshold, limit, msg="", area=""):
+    rows = queue.next_batch(conn, threshold=threshold, limit=limit * 3 if area else limit)
+    if area:
+        rows = [r for r in rows if (r["area"] or "") == area][:limit]
     st = storage.stats(conn)
     left = queue.can_send_today(conn, get_settings().daily_limit)
     actions = (
@@ -81,6 +105,20 @@ def render_index(conn, threshold, limit, msg=""):
     ]
     if msg:
         parts.append("<div class='card'>%s</div>" % esc(msg))
+    warning = parser_warning(conn)
+    if warning:
+        parts.append("<div class='card'>%s</div>" % esc(warning))
+    options = ["<option value=''>все регионы</option>"]
+    for row in storage.area_counts(conn):
+        value = row["area"] or ""
+        selected = " selected" if value == area else ""
+        options.append("<option value='%s'%s>%s (%d)</option>" % (
+            esc(value), selected, esc(value or "регион не указан"), row["cnt"]))
+    parts.append(
+        "<div class='actions'><form method='get' action='/' style='display:inline'>"
+        "<input type='hidden' name='threshold' value='%d'>"
+        "<select name='area' onchange='this.form.submit()'>%s</select></form></div>" % (
+            threshold, "".join(options)))
     parts.append("<table><tr><th>Балл</th><th>Вакансия</th><th>Компания</th><th>Формат</th><th>Опыт</th>"
                  "<th>Зарплата</th><th>Вердикт</th><th></th></tr>")
     for r in rows:
@@ -242,6 +280,9 @@ def render_card(conn, vacancy_id, msg=""):
     if not row:
         return None
     letter = row["letter"] or ""
+    note = "текст сгенерирован"
+    if row["letter_edited"]:
+        note = "правка сохранена: %s" % (row["letter_edited_at"] or "")[:16].replace("T", " ")
     reasons = row["reasons"] or ""
     from . import matching
     match_line = matching.explain(dict(row), get_settings().profile) or "нет данных"
@@ -289,7 +330,10 @@ def render_card(conn, vacancy_id, msg=""):
         "<button class='btn' type='submit'>Пропустить</button></form>" % esc(row["id"]),
         "<a class='btn' href='/letter/%s'>Скачать .txt</a>" % esc(row["id"]),
         "</div>",
-        "<textarea id='letter'>%s</textarea>" % esc(letter),
+        "<form method='post' action='/letter/%s'>"
+        "<textarea id='letter' name='text'>%s</textarea>"
+        "<div class='actions'><button class='btn primary' type='submit'>Сохранить письмо</button>"
+        "<span class='meta'>%s</span></div></form>" % (esc(row["id"]), esc(letter), esc(note)),
         "<div class='card' style='margin-top:14px'><div class='meta'><b>Описание вакансии</b></div>%s</div>" % esc(row["description"]),
         "</main></body></html>",
     ]
@@ -328,7 +372,8 @@ class Handler(BaseHTTPRequestHandler):
                 qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
                 threshold = int(qs.get("threshold", [get_settings().score_threshold])[0])
                 msg = qs.get("msg", [""])[0]
-                self._send(render_index(conn, threshold, limit=50, msg=msg))
+                area = qs.get("area", [""])[0]
+                self._send(render_index(conn, threshold, limit=50, msg=msg, area=area))
             elif path == "/funnel":
                 qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
                 days = qs.get("days", [None])[0]
@@ -372,6 +417,19 @@ class Handler(BaseHTTPRequestHandler):
                                       (form.get("note") or [""])[0])
                 self._redirect("/v/%s?msg=%s" % (urllib.parse.quote(vacancy_id),
                                                  urllib.parse.quote(report)))
+            elif path.startswith("/letter/"):
+                vacancy_id = path.split("/")[2]
+                text = (self._form().get("text") or [""])[0]
+                text = text.replace("\r\n", "\n").strip()
+                if text:
+                    storage.save_letter(conn, vacancy_id, text, model="manual", edited=True)
+                    storage.log_event(conn, "letter_edit",
+                                      {"vacancy_id": vacancy_id, "chars": len(text)})
+                    msg = "письмо сохранено"
+                else:
+                    msg = "пустой текст не сохранён"
+                self._redirect("/v/%s?msg=%s" % (urllib.parse.quote(vacancy_id),
+                                                 urllib.parse.quote(msg)))
             elif path.startswith("/run/"):
                 kind = path.split("/")[2]
                 report = run_action(kind, conn)
