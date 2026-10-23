@@ -1,0 +1,72 @@
+{
+  "found": 2,
+  "pages": 1,
+  "page": 0,
+  "per_page": 2,
+  "clusters": null,
+  "items": [
+    {
+      "id": "111",
+      "name": "AI-инженер",
+      "employer": {
+        "id": "777",
+        "name": "ООО Ромашка"
+      },
+      "alternate_url": "https://hh.ru/vacancy/111",
+      "salary": {
+        "from": 180000,
+        "to": null,
+        "currency": "RUR",
+        "gross": false
+      },
+      "work_format": [
+        {
+          "id": "REMOTE",
+          "name": "Удалённо"
+        }
+      ],
+      "schedule": {
+        "id": "remote",
+        "name": "Удаленная работа"
+      },
+      "experience": {
+        "id": "between1And3",
+        "name": "От 1 года до 3 лет"
+      },
+      "published_at": "2026-10-22T09:00:00+0300",
+      "snippet": {
+        "requirement": "Python, LLM, RAG",
+        "responsibility": "Разработка ассистентов"
+      }
+    },
+    {
+      "id": "222",
+      "name": "Промпт-инженер",
+      "employer": {
+        "id": "888",
+        "name": "ООО Лютик"
+      },
+      "alternate_url": "https://hh.ru/vacancy/222",
+      "salary": null,
+      "work_format": [
+        {
+          "id": "HYBRID",
+          "name": "Гибрид"
+        }
+      ],
+      "schedule": {
+        "id": "fullDay",
+        "name": "Полный день"
+      },
+      "experience": {
+        "id": "between3And6",
+        "name": "От 3 до 6 лет"
+      },
+      "published_at": "2026-10-21T12:30:00+0300",
+      "snippet": {
+        "requirement": "Промпты, LLM, аналитика",
+        "responsibility": "Настройка промптов"
+      }
+    }
+  ]
+}

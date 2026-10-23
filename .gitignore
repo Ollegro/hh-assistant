@@ -1,0 +1,17 @@
+# Личные данные и результаты работы — не публикуются
+config/profile.json
+.env
+data/
+out/
+*.sqlite3
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# ОС и редакторы
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/

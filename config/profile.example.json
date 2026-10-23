@@ -1,0 +1,40 @@
+{
+  "name": "Имя Фамилия",
+  "headline": "AI-инженер / промпт-инженер",
+  "salary_from": 180000,
+  "salary_to": 250000,
+  "formats": ["удалённо", "гибрид"],
+  "stop_words": ["продажи", "холодные звонки", "стажёр", "стажер"],
+  "must_any": ["ai", "llm", "rag", "промпт", "агент", "python", "fastapi"],
+  "target_roles": ["AI-инженер", "промпт-инженер", "LLM-инженер", "RAG-разработчик", "AI-агенты"],
+  "seniority": "middle+",
+  "queries": ["AI инженер", "промпт-инженер", "LLM инженер", "RAG разработчик", "AI агенты разработчик"],
+  "work_history": [
+    {
+      "company": "название компании или «фриланс»",
+      "role": "должность",
+      "period": "2024 — н.в.",
+      "domain": ["RAG", "LLM API", "автоматизация процессов"]
+    }
+  ],
+  "stack": {
+    "must": ["python", "llm", "rag", "промпт", "prompt", "fastapi", "postgresql", "openai"],
+    "nice": ["langchain", "pgvector", "faiss", "aiogram", "n8n", "docker", "ollama", "embeddings", "агент"],
+    "avoid_in_title": ["1с", "1c", "c++", "sap", "продаж"]
+  },
+  "education": ["вуз, год — специальность"],
+  "languages": {"русский": "родной", "английский": "B1"},
+  "locations": {"city": "Москва", "area_id": 1, "relocation": false},
+  "exclude_companies": [],
+  "links": {
+    "github": "https://github.com/username",
+    "telegram": "@username",
+    "email": "user@example.com"
+  },
+  "facts": [
+    "подтверждённое достижение с цифрами (только реальные факты)"
+  ],
+  "gaps": [
+    "чего честно нет в опыте"
+  ]
+}
