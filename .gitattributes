@@ -1,0 +1,4 @@
+# Скрипты и юниты systemd должны лежать в репозитории с LF:
+# CRLF в install.sh ломает запуск на Linux (\r: command not found).
+*.sh text eol=lf
+deploy/hh-assistant.service text eol=lf

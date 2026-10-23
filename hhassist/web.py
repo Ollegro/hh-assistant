@@ -1,7 +1,11 @@
 # -*- coding: utf-8 -*-
 """Локальный веб-интерфейс ассистента (стандартная библиотека, без зависимостей)."""
+import base64
+import hmac
 import html
+import ipaddress
 import os
+import ssl
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -458,6 +462,58 @@ def render_card(conn, vacancy_id, msg=""):
     return "".join(parts)
 
 
+def is_local_address(addr):
+    """True для петлевых адресов (127.0.0.0/8, ::1): им вход не нужен."""
+    host = (addr or "").split("%")[0].strip()
+    if host in ("", "localhost"):
+        return host == "localhost"
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def parse_basic_auth(header):
+    """'Basic dXNlcjpwYXNz' -> (user, password). None, если заголовок не Basic/битый."""
+    if not header:
+        return None
+    parts = str(header).split(None, 1)
+    if len(parts) != 2 or parts[0].lower() != "basic":
+        return None
+    try:
+        raw = base64.b64decode(parts[1].strip(), validate=True).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        return None
+    if ":" not in raw:
+        return None
+    user, _, password = raw.partition(":")
+    return user, password
+
+
+def password_configured(settings):
+    return bool((settings.web_auth_password or "").strip())
+
+
+def auth_required(settings, client_address):
+    """Вход нужен всегда, если задан пароль; без пароля — только для нелокальных адресов."""
+    if password_configured(settings):
+        return True
+    return not is_local_address(client_address)
+
+
+def auth_ok(settings, header):
+    """Проверка заголовка Authorization (Basic) без утечки по времени."""
+    user = (settings.web_auth_user or "").strip() or "hh"
+    pair = parse_basic_auth(header)
+    if not pair:
+        return False
+    got_user, got_password = pair
+    user_ok = hmac.compare_digest(got_user.encode("utf-8"), user.encode("utf-8"))
+    pass_ok = hmac.compare_digest(got_password.encode("utf-8"),
+                                  (settings.web_auth_password or "").encode("utf-8"))
+    return user_ok and pass_ok
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "hh-assistant/0.1"
 
@@ -482,7 +538,41 @@ class Handler(BaseHTTPRequestHandler):
             return {}
         return urllib.parse.parse_qs(body.decode("utf-8", "replace"))
 
+    def _deny(self, text, status=403):
+        """Страница отказа: 401 просит у браузера логин/пароль, 403 — просто запрет."""
+        page = ("<html><head><meta charset='utf-8'><title>hh-assistant: вход</title></head>"
+                "<body style='font-family:Segoe UI,Arial,sans-serif;padding:40px;max-width:660px'>"
+                "<h3>Доступ закрыт</h3><p>%s</p></body></html>" % esc(text))
+        data = page.encode("utf-8")
+        self.send_response(status)
+        if status == 401:
+            self.send_header("WWW-Authenticate", 'Basic realm="hh-assistant", charset="UTF-8"')
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+        self.close_connection = True
+
+    def _authorized(self):
+        """Вход: пароль из .env или запрос с самого сервера (127.0.0.1)."""
+        settings = get_settings()
+        client = self.client_address[0] if self.client_address else ""
+        if not auth_required(settings, client):
+            return True
+        if auth_ok(settings, self.headers.get("Authorization")):
+            return True
+        if password_configured(settings):
+            self._deny("Введите логин и пароль из .env (WEB_AUTH_USER, WEB_AUTH_PASSWORD). "
+                       "Логин по умолчанию — hh.", 401)
+        else:
+            self._deny("Сервер слушает сеть без пароля, поэтому запросы не с этого компьютера "
+                       "отклонены: задайте в .env WEB_AUTH_USER и WEB_AUTH_PASSWORD "
+                       "и перезапустите сервер.")
+        return False
+
     def do_GET(self):
+        if not self._authorized():
+            return
         path = urllib.parse.urlparse(self.path).path
         conn = storage.connect()
         try:
@@ -521,6 +611,8 @@ class Handler(BaseHTTPRequestHandler):
             conn.close()
 
     def do_POST(self):
+        if not self._authorized():
+            return
         path = urllib.parse.urlparse(self.path).path
         conn = storage.connect()
         try:
@@ -573,7 +665,23 @@ class Handler(BaseHTTPRequestHandler):
 
 def run(host="127.0.0.1", port=8765):
     areas.ensure()  # справочник субъектов РФ для фильтра «регион»
+    settings = get_settings()
     httpd = ThreadingHTTPServer((host, port), Handler)
-    print("hh-assistant: http://%s:%d  (Ctrl+C для остановки)" % (host, port))
+    scheme = "http"
+    if settings.web_tls_cert or settings.web_tls_key:
+        if not (settings.web_tls_cert and settings.web_tls_key):
+            httpd.server_close()
+            raise SystemExit("для HTTPS нужны оба пути: WEB_TLS_CERT и WEB_TLS_KEY в .env")
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(settings.web_tls_cert, settings.web_tls_key)
+        httpd.socket = context.wrap_socket(httpd.socket, server_side=True)
+        scheme = "https"
+    print("hh-assistant: %s://%s:%d  (Ctrl+C для остановки)" % (scheme, host, port))
+    if not password_configured(settings) and not is_local_address(host):
+        print("ВНИМАНИЕ: сервер открыт по сети без пароля. Запросы не с этого компьютера "
+              "будут отклонены — задайте WEB_AUTH_USER и WEB_AUTH_PASSWORD в .env.")
+    if scheme == "http" and password_configured(settings) and not is_local_address(host):
+        print("ВНИМАНИЕ: пароль передаётся по HTTP в открытом виде. Включите HTTPS "
+              "(WEB_TLS_CERT, WEB_TLS_KEY) или поставьте перед сервером nginx с TLS.")
     httpd.serve_forever()
 

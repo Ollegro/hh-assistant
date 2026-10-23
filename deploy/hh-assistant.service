@@ -1,0 +1,28 @@
+[Unit]
+Description=hh-assistant: веб-интерфейс ассистента откликов hh.ru
+Documentation=file://__DIR__/deploy/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+Group=__USER__
+WorkingDirectory=__DIR__
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 __DIR__/cli.py serve --host 0.0.0.0 --port __PORT__
+Restart=on-failure
+RestartSec=5
+
+# Ограничения: приложение пишет только в свои каталоги, читает код и .env
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=__DIR__/data __DIR__/out __DIR__/config
+UMask=0077
+MemoryMax=600M
+
+[Install]
+WantedBy=multi-user.target

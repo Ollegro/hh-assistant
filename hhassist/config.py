@@ -117,6 +117,10 @@ class Settings:
     hh_source: str = "auto"
     hh_api_timeout: int = 30
     hh_api_retries: int = 3
+    web_auth_user: str = ""
+    web_auth_password: str = ""
+    web_tls_cert: str = ""
+    web_tls_key: str = ""
     profile: dict = field(default_factory=dict)
 
     def has_app_token(self):
@@ -175,6 +179,10 @@ def get_settings():
         hh_source=env.get("HH_SOURCE", "auto").strip().lower() or "auto",
         hh_api_timeout=int(env.get("HH_API_TIMEOUT", 30)),
         hh_api_retries=int(env.get("HH_API_RETRIES", 3)),
+        web_auth_user=env.get("WEB_AUTH_USER", "").strip(),
+        web_auth_password=env.get("WEB_AUTH_PASSWORD", ""),
+        web_tls_cert=env.get("WEB_TLS_CERT", "").strip(),
+        web_tls_key=env.get("WEB_TLS_KEY", "").strip(),
     )
     s.profile = load_profile()
     return s
