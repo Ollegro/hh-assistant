@@ -90,8 +90,18 @@ fi
 chmod 600 "$KEY"
 chmod 644 "$CERT"
 
-grep -q '^WEB_TLS_CERT=' "$DIR/.env" || echo "WEB_TLS_CERT=$CERT" >> "$DIR/.env"
-grep -q '^WEB_TLS_KEY=' "$DIR/.env" || echo "WEB_TLS_KEY=$KEY" >> "$DIR/.env"
+set_env() {
+    # set_env KEY VALUE FILE — вписать значение, если ключ пуст или отсутствует
+    if grep -q "^$1=..*" "$3"; then
+        return 0
+    fi
+    sed -i "/^$1=/d" "$3"
+    echo "$1=$2" >> "$3"
+}
+
+set_env WEB_TLS_CERT "$CERT" "$DIR/.env"
+set_env WEB_TLS_KEY "$KEY" "$DIR/.env"
+set_env WEB_AUTH_USER "hh" "$DIR/.env"
 chown "$USER_NAME:$USER_NAME" "$DIR/.env" "$CERT" "$KEY"
 chmod 600 "$DIR/.env"
 
@@ -115,7 +125,12 @@ systemctl is-active --quiet hh-assistant || {
     exit 1
 }
 CODE="$(curl -ks -o /dev/null -w '%{http_code}' "https://127.0.0.1:$PORT/" || true)"
-echo "   https://127.0.0.1:$PORT/ -> HTTP $CODE (401 — значит вход работает)"
+if [ "$CODE" = "401" ] || [ "$CODE" = "200" ]; then
+    echo "   https://127.0.0.1:$PORT/ -> HTTP $CODE (HTTPS и вход работают)"
+else
+    echo "   https://127.0.0.1:$PORT/ -> HTTP ${CODE:-нет ответа}"
+    echo "   проверьте: journalctl -u hh-assistant -n 30 --no-pager"
+fi
 
 cat <<EOF
 
