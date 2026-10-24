@@ -40,6 +40,15 @@ def normalize(name):
     return re.sub(r"\s+", " ", str(name or "")).strip().lower()
 
 
+def sort_regions(regions):
+    """[(id, name)] -> отсортировано по названию по русскому алфавиту (Ё — после Е).
+
+    Для сортировки Ё приравнивается к Е, как в словарях, чтобы не оказаться
+    первой из-за Юникода (U+0401 < U+0410).
+    """
+    return sorted(regions, key=lambda item: normalize(item[1]).replace("ё", "е"))
+
+
 def _read_cache():
     """[(id, name)] из кэша или None, если кэша нет/он просрочен/битый."""
     try:
@@ -97,7 +106,7 @@ def _download():
 def cached():
     """[(id, name)] без обращений к сети: кэш, иначе встроенный набор."""
     regions = _read_cache()
-    return [ALL_RUSSIA] + (regions or list(FALLBACK_REGIONS))
+    return [ALL_RUSSIA] + sort_regions(regions or list(FALLBACK_REGIONS))
 
 
 def ensure(force=False):
@@ -105,13 +114,13 @@ def ensure(force=False):
     if not force:
         regions = _read_cache()
         if regions:
-            return [ALL_RUSSIA] + regions
+            return [ALL_RUSSIA] + sort_regions(regions)
     try:
         regions = _download()
     except Exception:  # сеть, таймаут, чужой формат ответа — работаем на фолбэке
         return cached()
     _write_cache(regions)
-    return [ALL_RUSSIA] + regions
+    return [ALL_RUSSIA] + sort_regions(regions)
 
 
 def region_id(name):

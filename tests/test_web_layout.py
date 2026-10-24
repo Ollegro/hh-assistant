@@ -65,7 +65,7 @@ class SingleRegionSelectTest(Base):
 
     def test_only_one_region_select(self):
         page = self.page()
-        self.assertEqual(page.count("name='region'"), 1)
+        self.assertEqual(page.count("<select name='region'"), 1)
         self.assertNotIn("name='area'", page)          # второго выбора региона нет
         self.assertNotIn("name='city'", page)          # фильтра по городам нет
         self.assertNotIn("name='threshold'", page)     # порога оценки нет

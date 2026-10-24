@@ -104,6 +104,7 @@ class HandlerAuthTest(unittest.TestCase):
         handler.headers = {"Authorization": header} if header else {}
         handler.client_address = (client, 40000)
         handler._deny = mock.Mock()
+        handler._redirect = mock.Mock()
         return handler
 
     def test_remote_without_password_is_denied_403(self):
@@ -114,25 +115,29 @@ class HandlerAuthTest(unittest.TestCase):
         self.assertNotIn(401, args)
         self.assertIn("WEB_AUTH_PASSWORD", args[0])
 
-    def test_remote_with_password_asks_for_login_401(self):
+    def test_remote_with_password_redirects_to_login(self):
         s = settings(web_auth_user="hh", web_auth_password="secret")
         with mock.patch.object(web, "get_settings", return_value=s):
             handler = self.make_handler("8.8.8.8")
             self.assertFalse(handler._authorized())
-        self.assertEqual(handler._deny.call_args[0][1], 401)
+        handler._redirect.assert_called_once_with("/login")
+        handler._deny.assert_not_called()
 
-    def test_remote_with_correct_password_passes(self):
+    def test_remote_with_valid_session_passes(self):
         s = settings(web_auth_user="hh", web_auth_password="secret")
         with mock.patch.object(web, "get_settings", return_value=s):
-            handler = self.make_handler("8.8.8.8", basic("hh", "secret"))
+            handler = self.make_handler("8.8.8.8")
+            token = web.web_sessions.create(s)
+            handler.headers["Cookie"] = web.web_sessions.cookie_header(token)
             self.assertTrue(handler._authorized())
         handler._deny.assert_not_called()
+        handler._redirect.assert_not_called()
 
     def test_local_without_password_passes(self):
         with mock.patch.object(web, "get_settings", return_value=settings()):
             self.assertTrue(self.make_handler("127.0.0.1")._authorized())
 
-    def test_deny_sends_www_authenticate_only_on_401(self):
+    def test_deny_never_sends_www_authenticate(self):
         handler = web.Handler.__new__(web.Handler)
         handler.wfile = io.BytesIO()
         handler.send_response = mock.Mock()
@@ -140,7 +145,7 @@ class HandlerAuthTest(unittest.TestCase):
         handler.end_headers = mock.Mock()
         handler._deny("нужен пароль", 401)
         headers = [c[0][0] for c in handler.send_header.call_args_list]
-        self.assertIn("WWW-Authenticate", headers)
+        self.assertNotIn("WWW-Authenticate", headers)
         handler.send_response.assert_called_once_with(401)
 
         handler.send_header.reset_mock()

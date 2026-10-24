@@ -406,3 +406,20 @@ def stats(conn):
         "replied": count_vacancies_with(conn, REPLY_KINDS),
         "invited": count_vacancies_with(conn, ("invite",)),
     }
+
+
+def clear_db(conn):
+    """Удаляет все вакансии, оценки, письма, отклики и события из базы.
+
+    Схема таблиц остаётся. Используется для полной очистки перед новым сбором
+    по другим запросам/регионам. Возвращает количество удалённых вакансий.
+    """
+    cur = conn.cursor()
+    cur.execute("DELETE FROM events")
+    cur.execute("DELETE FROM applications")
+    cur.execute("DELETE FROM letters")
+    cur.execute("DELETE FROM scores")
+    deleted = cur.execute("DELETE FROM vacancies").rowcount
+    conn.commit()
+    return deleted
+

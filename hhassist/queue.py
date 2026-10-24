@@ -56,9 +56,9 @@ def next_batch(conn, limit=50, only_new=True, cooldown_days=None, region=""):
         sql += (" AND (COALESCE(v.region, '') = ?"
                 " OR (COALESCE(v.region, '') = '' AND COALESCE(v.area, '') = ?))")
         params.extend([region, region])
-    sql += " ORDER BY COALESCE(s.score, 0) DESC, v.created_at DESC LIMIT ?"
-    # берём с запасом: часть строк отсеют стоп-лист и кулдаун компаний
-    params.append(limit * 3 if cooled else limit)
+    sql += " ORDER BY COALESCE(s.score, 0) DESC, v.created_at DESC"
+    # Ограничение применяется после стоп-листа и кулдауна; None — вся выборка
+    # для серверных фильтров таблицы и подсчёта страниц.
     rows = conn.execute(sql, params).fetchall()
     return _drop_cooled(_drop_excluded(rows), cooled)[:limit]
 

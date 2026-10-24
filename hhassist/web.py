@@ -6,6 +6,7 @@ import html
 import ipaddress
 import json
 import os
+import re
 import ssl
 import threading
 import time
@@ -13,8 +14,8 @@ import traceback
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import areas, jobs, llm, queue, storage
-from .config import BASE, get_settings
+from . import areas, jobs, llm, queue, resume, storage, web_sessions, vacancy_filters
+from .config import BASE, get_settings, load_profile
 
 CSS = """
 *{box-sizing:border-box}
@@ -44,11 +45,11 @@ font-weight:600;background:rgba(120,90,170,.12);color:#5d5470}
 a{color:#6b3fc4;text-decoration:none}a:hover{text-decoration:underline}
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:36px;
 padding:0 14px;border-radius:10px;border:1px solid rgba(120,90,170,.25);
-background:rgba(255,255,255,.92);color:#3a2d52;cursor:pointer;font-size:13px;font-family:inherit;
+background:linear-gradient(135deg,#2563eb,#1d4ed8);color:#fff;cursor:pointer;font-size:13px;font-family:inherit;
 line-height:1;white-space:nowrap;text-decoration:none;
 box-shadow:0 2px 8px rgba(84,52,140,.08);transition:transform .12s ease,box-shadow .12s ease}
 .btn:hover{transform:translateY(-1px);box-shadow:0 6px 16px rgba(84,52,140,.16);text-decoration:none}
-.btn.primary{background:linear-gradient(135deg,#8b5cf6,#d06ef0);border-color:transparent;color:#fff}
+.btn.primary{background:linear-gradient(135deg,#3b82f6,#1d4ed8);border-color:transparent;color:#fff}
 select{height:36px;padding:0 10px;border-radius:10px;border:1px solid rgba(120,90,170,.25);
 background:rgba(255,255,255,.92);color:#3a2d52;font-size:13px;font-family:inherit;line-height:1;
 max-width:100%}
@@ -80,6 +81,11 @@ dialog table{display:table;width:100%;background:transparent;border:none;box-sha
 dialog th,dialog td{padding:5px 8px;font-size:12.5px;border-bottom:1px solid rgba(120,90,170,.14)}
 dialog .points{white-space:nowrap;font-weight:700;color:#5d5470}
 textarea.queries-text{min-height:140px}
+textarea.resume-text{min-height:200px}
+input[type=file]{font-size:13px;color:#3a2d52;background:rgba(255,255,255,.92);
+ padding:8px 10px;border:1px solid rgba(120,90,170,.22);border-radius:10px;max-width:100%}
+.profile-table th:first-child{width:190px}
+.profile-table td{white-space:pre-line}
 @media (max-width:760px){main{padding:12px}th,td{padding:7px 9px;font-size:12.5px}
 header{padding:10px 14px;gap:10px}}
 """
@@ -219,16 +225,27 @@ def _resolve_region(value):
     return (str(found) if found else "", text)
 
 
-def render_index(conn, limit, msg="", region=""):
+def render_index(conn, limit, msg="", region="", filters=None, page=1):
     region_value, region_name = _resolve_region(region)
-    rows = queue.next_batch(conn, limit=limit, region=region_name)
+    filters = vacancy_filters.selected(filters or {})
+    all_rows = queue.next_batch(conn, limit=None, region=region_name)
+    matching_rows = vacancy_filters.apply(all_rows, filters)
+    total = len(matching_rows)
+    pages = max(1, (total + limit - 1) // limit)
+    try:
+        page = max(1, min(int(page), pages))
+    except (TypeError, ValueError):
+        page = 1
+    rows = matching_rows[(page - 1) * limit:page * limit]
+    hidden_filters = "".join("<input type='hidden' name='f_%s' value='%s'>" % (col, esc(v))
+                             for col, values in filters.items() for v in values)
     st = storage.stats(conn)
     left = queue.can_send_today(conn, get_settings().daily_limit)
     # Один селект региона на всю страницу: он же задаёт регион сбора (POST /run/collect)
     # и фильтр списка. Кнопки действий — в той же форме через formaction, поэтому
     # высота и отступы у селекта и кнопок одинаковые.
     toolbar = (
-        "<form method='get' action='/' class='toolbar'>"
+        "<form method='get' action='/' class='toolbar'>" + hidden_filters +
         "<select name='region' title='регион: сбор и фильтр списка'"
         " onchange='this.form.submit()'>%s</select>"
         "<span class='buttons'>"
@@ -240,6 +257,12 @@ def render_index(conn, limit, msg="", region=""):
         " formmethod='post'>Сгенерировать письма</button>"
         "<a class='btn' href='/export'>Экспорт писем в файлы</a>"
         "</span>"
+        "<a class='btn' href='/profile'>Профиль соискателя</a>"
+        "<input type='hidden' name='confirm' value='1'>"
+        "<button class='btn primary' type='submit' formaction='/reset'"
+        " formmethod='post'"
+        " onclick='return confirm(\"Очистить всю базу вакансий, оценок, писем и откликов? Это нельзя отменить.\");'>"
+        "Очистить базу</button>"
         "</form>" % _options(_region_options(conn), region_value)
     )
     parts = [
@@ -267,9 +290,38 @@ def render_index(conn, limit, msg="", region=""):
         "без оценки: <b>%d</b> · в списке: <b>%d</b></div>" % (
             st["vacancies"], st["scored"], max(0, st["vacancies"] - st["scored"]),
             len(rows)))
-    parts.append("<table><tr><th>Оценка</th><th>Вакансия</th><th>Компания</th><th>Город</th>"
-                 "<th>Формат</th><th>Опыт</th>"
-                 "<th>Зарплата</th><th></th></tr>")
+    parts.append("<form method='post' action='/logout'><button class='btn' type='submit'>"
+                 "Выйти</button></form>")
+    parts.append("<div class='meta'>Найдено по фильтрам: <b>%d</b> · страница %d из %d</div>" %
+                 (total, page, pages))
+    parts.append("<form id='column-filters' method='get' action='/'></form>"
+                 "<input form='column-filters' type='hidden' name='region' value='%s'>" % esc(region_value))
+    parts.append("<style>.column-filter{display:inline-block;vertical-align:top}"
+                 ".column-filter summary{cursor:pointer;color:#1d4ed8}"
+                 ".filter-menu{white-space:normal;min-width:190px;max-width:280px}"
+                 ".filter-values{max-height:220px;overflow:auto;margin:8px 0}"
+                 ".filter-values label{display:block;font-weight:400;padding:4px}"
+                 ".filter-menu input[type=search]{width:100%;padding:7px}</style>")
+    parts.append("<table><thead><tr>")
+    for col, title in vacancy_filters.COLUMNS:
+        active = " (%d)" % len(filters[col]) if filters[col] else ""
+        parts.append("<th>%s <details class='column-filter'><summary aria-label='Фильтр: %s'>"
+                     "▼%s</summary><div class='filter-menu'>" % (title, title, active))
+        parts.append("<input type='search' placeholder='Поиск значений' aria-label='Поиск значений: %s' "
+                     "oninput=\"var q=this.value.toLocaleLowerCase();"
+                     "this.nextElementSibling.querySelectorAll('label').forEach(function(l){"
+                     "l.hidden=!l.textContent.toLocaleLowerCase().includes(q)});\">" % title)
+        parts.append("<div class='filter-values'>")
+        for value in vacancy_filters.options(all_rows, col, filters):
+            parts.append("<label><input form='column-filters' type='checkbox' name='f_%s' "
+                         "value='%s'%s> %s</label>" % (col, esc(value),
+                         " checked" if value in filters[col] else "", esc(value)))
+        parts.append("</div><button class='btn' form='column-filters' type='submit'>Применить</button>"
+                     " <button class='btn' type='button' onclick=\""
+                     "this.parentElement.querySelectorAll('input[type=checkbox]').forEach(function(i){"
+                     "i.checked=false});document.getElementById('column-filters').requestSubmit();\">"
+                     "Все значения</button></div></details></th>")
+    parts.append("<th></th></tr></thead><tbody>")
     for r in rows:
         parts.append(
             "<tr><td class='rate'><span class='score %s'>%s</span>%s</td>"
@@ -283,7 +335,15 @@ def render_index(conn, limit, msg="", region=""):
     if not rows:
         parts.append("<tr><td colspan='8'>Ни одной вакансии по фильтру. Соберите вакансии "
                      "кнопкой выше, затем нажмите «Оценить».</td></tr>")
-    parts.append("</table></main></body></html>")
+    parts.append("</tbody></table><div class='actions'>")
+    query = {"region": region_value}
+    query.update({"f_" + col: values for col, values in filters.items() if values})
+    for number, label in ((page - 1, "← Назад"), (page + 1, "Далее →")):
+        if 1 <= number <= pages:
+            href = "/?" + urllib.parse.urlencode(dict(query, page=number), doseq=True)
+            parts.append("<a class='btn' href='%s'>%s</a>" % (esc(href), label))
+    parts.append("<a class='btn' href='/?%s'>Сбросить фильтры</a></div></main></body></html>" %
+                 esc(urllib.parse.urlencode({"region": region_value})))
     return "".join(parts)
 
 
@@ -372,6 +432,131 @@ def _queries_block():
         "<div class='actions'><button class='btn primary' type='submit'>"
         "Сохранить запросы</button><span class='meta'>%s</span></div></form></div>"
         % (esc(text), note))
+
+
+def parse_multipart(body, content_type):
+    """multipart/form-data -> ({поле: [значения]}, {поле: (имя файла, байты)}).
+
+    Стандартной библиотекой: `cgi` удалён в Python 3.13, а формат простой —
+    части разделены `--boundary`, шапка части кончается пустой строкой.
+    """
+    match = re.search(r'boundary="?([^";]+)"?', content_type or "")
+    if not match:
+        return {}, {}
+    marker = b"--" + match.group(1).encode("utf-8")
+    fields, files = {}, {}
+    for chunk in (body or b"").split(marker):
+        chunk = chunk.strip(b"\r\n")
+        if not chunk or chunk == b"--":
+            continue
+        head, separator, data = chunk.partition(b"\r\n\r\n")
+        if not separator:
+            continue
+        headers = head.decode("utf-8", "replace")
+        name_match = re.search(r'name="([^"]*)"', headers)
+        if not name_match:
+            continue
+        name = name_match.group(1)
+        filename_match = re.search(r'filename="([^"]*)"', headers)
+        if filename_match:
+            files[name] = (filename_match.group(1), data)
+        else:
+            fields.setdefault(name, []).append(data.decode("utf-8", "replace"))
+    return fields, files
+
+
+def _salary_text(source):
+    """Вилка профиля одной строкой."""
+    low, high = source.get("salary_from"), source.get("salary_to")
+    if low and high:
+        return "%s–%s ₽" % (resume.money(low), resume.money(high))
+    if low:
+        return "от %s ₽" % resume.money(low)
+    if high:
+        return "до %s ₽" % resume.money(high)
+    return "—"
+
+
+def _profile_rows(profile):
+    """Что сейчас в профиле: пары (подпись, текст). Контакты не показываем."""
+    stack = profile.get("stack") or {}
+    work = ["%s — %s (%s)" % (job.get("company") or "—", job.get("role") or "—",
+                              job.get("period") or "—")
+            for job in profile.get("work_history") or []]
+    return [
+        ("Профессия", profile.get("headline") or "—"),
+        ("Целевые роли", ", ".join(profile.get("target_roles") or []) or "—"),
+        ("Уровень", profile.get("seniority") or "—"),
+        ("Ключевой стек", ", ".join(stack.get("must") or []) or "—"),
+        ("Дополнительно", ", ".join(stack.get("nice") or []) or "—"),
+        ("Вилка", _salary_text(profile)),
+        ("Формат работы", ", ".join(profile.get("formats") or []) or "—"),
+        ("Опыт работы", "\n".join(work) or "—"),
+        ("Образование", "; ".join(profile.get("education") or []) or "—"),
+        ("Языки", ", ".join("%s — %s" % (key, value)
+                           for key, value in (profile.get("languages") or {}).items()) or "—"),
+        ("Чего нет (gaps)", "; ".join(profile.get("gaps") or []) or "—"),
+        ("Факты для письма", "\n".join("• " + fact for fact in profile.get("facts") or [])
+         or "—"),
+        ("Резюме загружено", profile.get("resume_updated_at") or "ещё не загружалось"),
+    ]
+
+
+def render_profile(msg="", fields=None, method="", note=""):
+    """Страница профиля: что сохранено, загрузка резюме и предпросмотр разбора."""
+    profile = get_settings().profile
+    parts = [
+        "<html><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+        "<title>Профиль — hh-assistant</title><style>%s</style></head><body>" % CSS,
+        "<header><b>hh-assistant</b><span>профиль соискателя</span>"
+        "<span style='flex:1'></span><a class='btn' href='/'>← к вакансиям</a></header><main>",
+    ]
+    if msg:
+        parts.append("<div class='card'>%s</div>" % esc(msg))
+    parts.append("<div class='card'><div class='meta'><b>Что сейчас в профиле</b> — "
+                 "эти данные участвуют в оценке вакансий и в письмах</div>"
+                 "<table class='profile-table'>")
+    for label, value in _profile_rows(profile):
+        parts.append("<tr><th>%s</th><td>%s</td></tr>" % (esc(label), esc(value)))
+    parts.append("</table></div>")
+
+    parts.append(
+        "<div class='card'><div class='meta'><b>Загрузить резюме</b> — файл TXT или DOCX "
+        "либо вставленный текст. PDF пока не поддерживается: сохраните резюме в DOCX/TXT. "
+        "Сначала покажем, что распознано, и спросим подтверждение.</div>"
+        "<form method='post' action='/profile' enctype='multipart/form-data'>"
+        "<div class='actions'><input type='file' name='file' accept='.txt,.docx,.pdf'>"
+        "<span class='meta'>до %d МБ</span></div>"
+        "<textarea class='resume-text' name='text' placeholder='…или вставьте текст резюме "
+        "целиком: должность, опыт, навыки, образование'></textarea>"
+        "<div class='actions'><button class='btn primary' type='submit' name='action' "
+        "value='parse'>Разобрать резюме</button>"
+        "<span class='meta'>с LLM разбор занимает до минуты; без ключа работают правила"
+        "</span></div></form></div>" % (resume.MAX_BYTES // (1024 * 1024)))
+
+    if fields:
+        rows = resume.describe(fields)
+        payload = json.dumps(fields, ensure_ascii=False)
+        parts.append(
+            "<div class='card'><div class='meta'><b>Распознано</b> · метод: %s%s</div>"
+            "<table class='profile-table'>" % (
+                esc(method or "правила"),
+                (" · " + esc(note)) if note else ""))
+        for label, value in rows:
+            parts.append("<tr><th>%s</th><td>%s</td></tr>" % (esc(label), esc(value)))
+        parts.append("</table>")
+        parts.append(
+            "<form method='post' action='/profile'>"
+            "<input type='hidden' name='action' value='apply'>"
+            "<input type='hidden' name='fields' value=\"%s\">"
+            "<div class='actions'>"
+            "<button class='btn primary' type='submit'>Применить к профилю</button>"
+            "<span class='meta'>контакты, стоп-слова, стоп-лист компаний и «чего нет» "
+            "останутся прежними; прежняя версия профиля уйдёт в бэкап</span>"
+            "</div></form></div>" % esc(payload))
+    parts.append("</main></body></html>")
+    return "".join(parts)
 
 
 # Один прогон за раз: сбор/оценка/письма пишут в SQLite и ходят в LLM минутами.
@@ -745,6 +930,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
+        if "Cache-Control" not in (headers or {}):
+            self.send_header("Cache-Control", "no-store")
         for name, value in (headers or {}).items():
             self.send_header(name, value)
         self.end_headers()
@@ -800,15 +987,58 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def _form(self):
-        """Поля POST-формы (карточка присылает kind/note)."""
+        """Поля POST-формы: urlencoded (карточка) или multipart (загрузка резюме).
+
+        Файлы складываются в `self._files` как {поле: (имя, байты)}.
+        """
+        self._files = {}
         length = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(length) if length else b""
         if not body:
             return {}
+        ctype = self.headers.get("Content-Type") or ""
+        if ctype.startswith("multipart/form-data"):
+            fields, files = parse_multipart(body, ctype)
+            self._files = files
+            return fields
         return urllib.parse.parse_qs(body.decode("utf-8", "replace"))
 
+    def _profile_post(self, conn):
+        """POST /profile: action=parse (разобрать резюме, показать предпросмотр)
+        или action=apply (записать разобранное в профиль).
+
+        Возвращает ("html", тело) для parse — тело уже отправляется как страница,
+        или ("", отчёт) для apply — отчёт уходит в redirect-сообщение."""
+        action = (self._form().get("action") or [""])[0]
+        if action == "parse":
+            text = (self._form().get("text") or [""])[0]
+            uploaded = self._files.get("file")
+            filename = uploaded[0] if uploaded else ""
+            data = uploaded[1] if uploaded else b""
+            if not text and not data:
+                return ("", "ничего не передано: приложите файл или вставьте текст резюме")
+            if not text and data:
+                text = resume.text_from_upload(filename, data)
+            settings = get_settings()
+            parsed, method, note = resume.parse_resume(text, settings)
+            html = render_profile(fields=parsed, method=method, note=note)
+            return ("html", html)
+        if action == "apply":
+            payload = (self._form().get("fields") or [""])[0]
+            if not payload:
+                return ("", "нечего сохранять: раздел «Распознано» пуст")
+            try:
+                parsed = json.loads(payload)
+            except ValueError:
+                return ("", "ошибка разбора разобранных данных: попробуйте загрузить резюме ещё раз")
+            current = dict(get_settings().profile)
+            merged = resume.merge_profile(current, parsed)
+            resume.save_profile(merged)
+            return ("", "профиль обновлён из резюме")
+        return ("", "неизвестное действие профиля")
+
     def _deny(self, text, status=403):
-        """Страница отказа: 401 просит у браузера логин/пароль, 403 — просто запрет."""
+        """Страница отказа без вызова браузерного окна Basic Auth."""
         page = ("<html><head><meta charset='utf-8'>"
                 "<meta name='viewport' content='width=device-width, initial-scale=1'>"
                 "<title>hh-assistant: вход</title><style>" + CSS + "</style></head><body>"
@@ -819,29 +1049,62 @@ class Handler(BaseHTTPRequestHandler):
         data = page.encode("utf-8")
         self._responded = True
         self.send_response(status)
-        if status == 401:
-            self.send_header("WWW-Authenticate", 'Basic realm="hh-assistant", charset="UTF-8"')
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
         self.close_connection = True
 
+    def _login_page(self, error="", status=200):
+        page = ("<!doctype html><html lang='ru'><head><meta charset='utf-8'>"
+                "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+                "<title>Вход — hh-assistant</title><style>" + CSS + "</style></head><body>"
+                "<main style='max-width:460px;margin-top:10vh'><div class='card'>"
+                "<h1>Вход в hh-assistant</h1><p role='alert'>" + esc(error) + "</p>"
+                "<form method='post' action='/login'>"
+                "<p><label>Логин<br><input name='username' autocomplete='username' required "
+                "style='width:100%;padding:10px'></label></p>"
+                "<p><label>Пароль<br><input type='password' name='password' "
+                "autocomplete='current-password' required style='width:100%;padding:10px'></label></p>"
+                "<button class='btn primary' type='submit'>Войти</button></form>"
+                "</div></main></body></html>")
+        self._send(page, status=status, headers={"Cache-Control": "no-store"})
+
+    def _session_cookie(self, token):
+        return web_sessions.cookie_header(token, isinstance(self.connection, ssl.SSLSocket))
+
+    def _login_post(self):
+        settings = get_settings()
+        length = int(self.headers.get("Content-Length") or 0)
+        if length > 8192:
+            self.close_connection = True
+            self._login_page("Слишком большой запрос.", 413)
+            return
+        form = self._form()
+        if not password_configured(settings) or not web_sessions.credentials_ok(
+                settings, (form.get("username") or [""])[0],
+                (form.get("password") or [""])[0]):
+            self._login_page("Неверный логин или пароль.", 401)
+            return
+        web_sessions.revoke(self.headers.get("Cookie"))
+        token = web_sessions.create(settings)
+        self._send("", status=303, headers={"Location": "/", "Cache-Control": "no-store",
+                                            "Set-Cookie": self._session_cookie(token)})
+
     def _authorized(self):
-        """Вход: пароль из .env или запрос с самого сервера (127.0.0.1)."""
+        """Все страницы и действия требуют действующей серверной сессии."""
         settings = get_settings()
         client = self.client_address[0] if self.client_address else ""
         if not auth_required(settings, client):
             return True
-        if auth_ok(settings, self.headers.get("Authorization")):
+        if password_configured(settings) and web_sessions.valid(settings, self.headers.get("Cookie")):
             return True
         if password_configured(settings):
-            self._deny("Введите логин и пароль из .env (WEB_AUTH_USER, WEB_AUTH_PASSWORD). "
-                       "Логин по умолчанию — hh.", 401)
+            self.close_connection = True
+            self._redirect("/login")
         else:
-            self._deny("Сервер слушает сеть без пароля, поэтому запросы не с этого компьютера "
-                       "отклонены: задайте в .env WEB_AUTH_USER и WEB_AUTH_PASSWORD "
-                       "и перезапустите сервер.")
+            self._deny("Задайте WEB_AUTH_USER и WEB_AUTH_PASSWORD и перезапустите сервер.")
         return False
 
     def do_GET(self):
@@ -857,6 +1120,9 @@ class Handler(BaseHTTPRequestHandler):
             self._fail(exc)
 
     def _get(self):
+        if urllib.parse.urlparse(self.path).path == "/login":
+            self._login_page()
+            return
         if not self._authorized():
             return
         path = urllib.parse.urlparse(self.path).path
@@ -869,7 +1135,8 @@ class Handler(BaseHTTPRequestHandler):
                 qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
                 msg = qs.get("msg", [""])[0]
                 region = qs.get("region", [""])[0]
-                self._send(render_index(conn, limit=50, msg=msg, region=region))
+                self._send(render_index(conn, limit=50, msg=msg, region=region,
+                                        filters=qs, page=qs.get("page", ["1"])[0]))
             elif path.startswith("/v/"):
                 qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
                 msg = qs.get("msg", [""])[0]
@@ -892,15 +1159,29 @@ class Handler(BaseHTTPRequestHandler):
                            "<main><div class='card'>Экспортировано писем: <b>%d</b> в %s</div>"
                            "<div class='actions'><a class='btn' href='/'>← назад</a></div>"
                            "</main></body></html>" % (made, esc(out_dir)))
+            elif path == "/profile":
+                self._send(render_profile())
             else:
                 self._send("not found", status=404)
         finally:
             conn.close()
 
     def _post(self):
+        path = urllib.parse.urlparse(self.path).path
+        origin = self.headers.get("Origin")
+        if origin and urllib.parse.urlsplit(origin).netloc != self.headers.get("Host"):
+            self._deny("Запрос с другого сайта отклонён.")
+            return
+        if path == "/login":
+            self._login_post()
+            return
         if not self._authorized():
             return
-        path = urllib.parse.urlparse(self.path).path
+        if path == "/logout":
+            web_sessions.revoke(self.headers.get("Cookie"))
+            self._send("", status=303, headers={"Location": "/login", "Cache-Control": "no-store",
+                                                "Set-Cookie": self._session_cookie("")})
+            return
         conn = storage.connect()
         try:
             if path.startswith("/mark/"):
@@ -943,6 +1224,12 @@ class Handler(BaseHTTPRequestHandler):
                 # единый селект региона (id субъекта); поле area — совместимость со старыми формами
                 value = (form.get("region") or form.get("area") or [""])[0]
                 area_id, _region = _resolve_region(value)
+                if kind == "collect" and value and not area_id:
+                    self._redirect("/?msg=" + urllib.parse.quote(
+                        "Не удалось определить регион сбора. Выберите регион из справочника."))
+                    return
+                if kind == "collect" and not area_id:
+                    area_id = "113"
                 if target:
                     # одна вакансия: быстрый путь, ответ сразу с результатом
                     report = run_action(kind, conn, area=area_id, vacancy_id=target)
@@ -951,7 +1238,25 @@ class Handler(BaseHTTPRequestHandler):
                     report = start_action(kind, area=area_id)
                 back = "/v/%s" % urllib.parse.quote(target) if target else "/"
                 extra = "&rated=1" if target and kind == "score" else ""
-                self._redirect(back + "?msg=" + urllib.parse.quote(report) + extra)
+                preserved = {key: values for key, values in form.items()
+                             if key == "region" or key.startswith("f_")}
+                suffix = ("&" + urllib.parse.urlencode(preserved, doseq=True)) if not target else ""
+                self._redirect(back + "?msg=" + urllib.parse.quote(report) + extra + suffix)
+            elif path == "/profile":
+                kind, payload = self._profile_post(conn)
+                if kind == "html":
+                    self._send(payload)
+                else:
+                    self._redirect("/profile?msg=" + urllib.parse.quote(payload))
+            elif path == "/reset":
+                if (self._form().get("confirm") or [""])[0] != "1":
+                    self._redirect("/?msg=" + urllib.parse.quote(
+                        "очистка отменена: не подтверждено"))
+                else:
+                    deleted = storage.clear_db(conn)
+                    storage.log_event(conn, "reset", {"deleted": deleted})
+                    self._redirect("/?msg=" + urllib.parse.quote(
+                        "база очищена: удалено вакансий %d (оценки, письма, отклики, события)" % deleted))
             else:
                 self._send("not found", status=404)
         finally:
