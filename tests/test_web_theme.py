@@ -49,6 +49,10 @@ class StaticFileTest(unittest.TestCase):
         self.assertIn("/static/bg.jpg", web.CSS)
         self.assertIn("backdrop-filter", web.CSS)
 
+    def test_background_url_is_versioned(self):
+        """Версия в ?v= обязательна: иначе браузер отдаст старую картинку из кэша."""
+        self.assertRegex(web.CSS, r"/static/bg\.jpg\?v=\d+")
+
 
 class ServeStaticTest(unittest.TestCase):
     """Локальный сервер: фон отдаётся с MIME-типом и кэшем, мусор — 404."""

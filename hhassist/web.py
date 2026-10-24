@@ -15,7 +15,7 @@ from .config import BASE, get_settings
 CSS = """
 *{box-sizing:border-box}
 body{font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:0;min-height:100vh;color:#2b2438;
-background:#c9d6e2 url('/static/bg.jpg?v=2') center/cover no-repeat fixed}
+background:#c9d6e2 url('/static/bg.jpg?v=3') center/cover no-repeat fixed}
 header{position:sticky;top:0;z-index:20;display:flex;gap:18px;align-items:center;flex-wrap:wrap;
 padding:14px 22px;background:rgba(255,255,255,.78);backdrop-filter:blur(14px) saturate(1.15);
 border-bottom:1px solid rgba(255,255,255,.65);box-shadow:0 6px 24px rgba(84,52,140,.10)}
@@ -23,12 +23,12 @@ header b{font-size:16px;letter-spacing:.2px}
 header span{color:#5d5470;font-size:13px}
 main{padding:20px 22px 40px;max-width:1200px;margin:0 auto}
 table{display:block;overflow-x:auto;border-collapse:separate;border-spacing:0;width:100%;
-background:rgba(255,255,255,.82);
+background:rgba(255,255,255,.88);
 border:1px solid rgba(255,255,255,.70);border-radius:14px;box-shadow:0 10px 30px rgba(84,52,140,.12)}
 th,td{padding:9px 12px;border-bottom:1px solid rgba(120,90,170,.14);font-size:13.5px;text-align:left;vertical-align:top}
-th{background:rgba(250,247,255,.86);color:#5d5470;font-weight:600;white-space:nowrap}
+th{background:rgba(250,247,255,.92);color:#5d5470;font-weight:600;white-space:nowrap}
 tr:last-child td{border-bottom:none}
-tbody tr:hover td{background:rgba(246,240,255,.72)}
+tbody tr:hover td{background:rgba(246,240,255,.92)}
 .score{font-weight:700}
 .s-high{color:#0f7a3d}.s-mid{color:#96660a}.s-low{color:#a01a2c}
 a{color:#6b3fc4;text-decoration:none}a:hover{text-decoration:underline}
@@ -45,17 +45,17 @@ max-width:100%}
 textarea{width:100%;min-height:420px;padding:12px;border:1px solid rgba(120,90,170,.22);border-radius:12px;
 background:rgba(255,255,255,.94);color:#2b2438;font-family:ui-monospace,Consolas,monospace;
 font-size:13px;line-height:1.5}
-.meta{margin:4px 0 12px;padding:10px 14px;border-radius:12px;background:rgba(255,255,255,.74);
+.meta{margin:4px 0 12px;padding:10px 14px;border-radius:12px;background:rgba(255,255,255,.84);
 color:#5d5470;font-size:13px;box-shadow:0 4px 16px rgba(84,52,140,.08)}
 .meta b{color:#2b2438}
 .actions{display:flex;gap:10px;margin:12px 0;flex-wrap:wrap;align-items:center}
 .actions form{display:flex;gap:10px;align-items:center;margin:0}
 .toolbar{display:flex;gap:10px;margin:14px 0;padding:10px 12px;flex-wrap:wrap;align-items:center;
-border-radius:14px;background:rgba(255,255,255,.80);border:1px solid rgba(255,255,255,.72);
+border-radius:14px;background:rgba(255,255,255,.86);border:1px solid rgba(255,255,255,.72);
 backdrop-filter:blur(12px) saturate(1.1);box-shadow:0 8px 24px rgba(84,52,140,.10)}
 .toolbar .buttons{display:flex;gap:10px;flex-wrap:wrap;align-items:center;flex:1 1 100%}
 header .btn{height:32px;padding:0 12px;font-size:12.5px}
-.card{background:rgba(255,255,255,.84);backdrop-filter:blur(12px);border:1px solid rgba(255,255,255,.72);
+.card{background:rgba(255,255,255,.90);backdrop-filter:blur(12px);border:1px solid rgba(255,255,255,.72);
 border-radius:14px;padding:16px;margin-bottom:14px;box-shadow:0 10px 28px rgba(84,52,140,.12)}
 .card table{display:table;width:100%}
 .reasons{font-size:12.5px;color:#5d5470}
