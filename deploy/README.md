@@ -39,7 +39,8 @@ bash /root/hh-src/deploy/install.sh
 
 Скрипт делает 7 шагов и печатает итог: пакеты (`python3`, `openssl`, `ufw`), системный
 пользователь `hhassist`, код в `/opt/hh-assistant`, `.env` со случайным паролем входа,
-самоподписанный сертификат на IP, systemd-сервис `hh-assistant`, правила `ufw`.
+самоподписанный сертификат на IP (доверенный Let's Encrypt — `deploy/letsencrypt-ip.sh`,
+п. 4), systemd-сервис `hh-assistant`, правила `ufw`.
 
 Параметры: `--port 8443`, `--dir /opt/hh-assistant`, `--user hhassist`, `--repo <git-url>`.
 Повторный запуск безопасен: код обновляется, `.env` и сертификаты не перезаписываются.
@@ -47,8 +48,15 @@ bash /root/hh-src/deploy/install.sh
 ## 3. Первый вход
 
 1. Откройте `https://<IP-сервера>:8443`.
-2. Браузер предупредит, что сертификат самоподписанный (Let's Encrypt по IP не выдаёт) —
-   «Дополнительно» → «Перейти на сайт».
+2. Сертификат из `install.sh` самоподписанный: Chrome и Firefox дают ссылку
+   «Дополнительно» → «Перейти на сайт», а **Яндекс.Браузер такой ссылки не показывает**
+   (`ERR_CERT_AUTHORITY_INVALID`) — приложение в нём просто не открывается.
+   Доверенный сертификат на тот же IP выпускается одной командой (см. п. 4):
+
+   ```bash
+   bash /root/hh-src/deploy/letsencrypt-ip.sh
+   ```
+
 3. Введите логин `hh` и пароль:
 
 ```bash
@@ -57,7 +65,43 @@ grep '^WEB_AUTH_PASSWORD=' /opt/hh-assistant/.env
 
 Сменить пароль: `nano /opt/hh-assistant/.env` → `systemctl restart hh-assistant`.
 
-## 4. Ключи и личный профиль (не в git)
+## 4. Доверенный сертификат Let's Encrypt на IP
+
+С 2026 года Let's Encrypt выдаёт сертификаты на IP-адреса (только профиль
+`shortlived`, срок жизни 6 дней). Тогда «зелёный замок» есть во всех браузерах,
+включая Яндекс, и предупреждения нет.
+
+```bash
+bash /root/hh-src/deploy/letsencrypt-ip.sh                  # IP определяется сам
+bash /root/hh-src/deploy/letsencrypt-ip.sh --dry-run        # тренировка на staging
+bash /root/hh-src/deploy/letsencrypt-ip.sh --ip 203.0.113.10 --email me@example.com
+```
+
+Что нужно, чтобы проверка прошла:
+
+| Условие | Как проверить |
+|---|---|
+| порт 80 открыт снаружи и отвечает на `http://<IP>/` | `curl -s -o /dev/null -w '%{http_code}\n' http://<IP>/` |
+| каталог `--webroot` отдаётся по этому IP на 80-м порту | положить файл в `<webroot>/.well-known/acme-challenge/` и запросить `http://<IP>/.well-known/acme-challenge/<файл>` |
+| certbot 5.4+ | скрипт сам ставит 5.x в `/opt/certbot-ip` (системный 2.9.0 флагов IP не знает) |
+
+Скрипт создаёт hook `/usr/local/bin/hh-tls-deploy.sh` (кладёт `fullchain.pem` и
+`privkey.pem` в `config/tls.crt` / `config/tls.key` и перезапускает сервис) и таймер
+`hh-certbot-renew.timer` — проверка продления дважды в сутки, потому что сертификат
+живёт 6 дней.
+
+Проверка результата:
+
+```bash
+openssl s_client -connect <IP>:8443 </dev/null 2>/dev/null | openssl x509 -noout -issuer -dates
+systemctl list-timers hh-certbot-renew.timer --no-pager
+/opt/certbot-ip/bin/certbot renew --dry-run
+```
+
+Если порт 80 занят веб-сервером (часто `nginx`), нужен именно **webroot его
+каталога**, а не `--standalone`: `--standalone` требует освободить 80-й порт.
+
+## 5. Ключи и личный профиль (не в git)
 
 `.env` и `config/profile.json` намеренно исключены из репозитория — перенесите их сами:
 
@@ -75,7 +119,7 @@ systemctl restart hh-assistant
 Без ключа LLM приложение работает в офлайн-режиме (правила + шаблонные письма) —
 проверить контур: `python3 /opt/hh-assistant/cli.py stats` и `... tools/check_llm.py`.
 
-## 5. Обновление версии
+## 6. Обновление версии
 
 ```bash
 cd /root/hh-src && git pull
@@ -85,7 +129,7 @@ bash deploy/install.sh
 или, если код правился на сервере: `systemctl restart hh-assistant`.
 База (`data/hhassist.sqlite3`), письма (`out/`), `.env` и `config/` при обновлении не трогаются.
 
-## 6. Резервная копия базы
+## 7. Резервная копия базы
 
 SQLite умеет безопасный онлайн-бэкап (сервис можно не останавливать):
 
@@ -103,7 +147,7 @@ PY
 Дальше файл можно забрать `scp` или сложить в Object Storage Selectel. Дополнительно помогает
 снапшот диска в панели (Облачные серверы → сервер → Снапшоты).
 
-## 7. Диагностика
+## 8. Диагностика
 
 ```bash
 systemctl status hh-assistant            # активен ли сервис
@@ -124,10 +168,10 @@ curl -k -u hh:ПАРОЛЬ -o /dev/null -w '%{http_code}\n' https://127.0.0.1:84
 | `bash: $'\r': command not found`, `bad interpreter` | `install.sh` попал на сервер с CRLF (пересохранён в Windows) | `sed -i 's/\r$//' deploy/install.sh deploy/hh-assistant.service` |
 | `address already in use` в журнале | порт занят другим процессом | `ss -ltnp \| grep 8443`, затем сменить `--port` и перезапустить скрипт |
 | `401` локально, `000` снаружи | порт закрыт в группе безопасности Selectel или в `ufw` | разрешить `8443/tcp` в панели и `ufw allow 8443/tcp` |
-| сертификат «не для этого адреса» | сервер получил новый IP | удалить `config/tls.crt`, `config/tls.key` и перезапустить `install.sh` |
+| сертификат «не для этого адреса» | сервер получил новый IP | удалить `config/tls.crt`, `config/tls.key`, перезапустить `install.sh`, затем `letsencrypt-ip.sh` |
 
 
-## 8. Что защищено и чего нет
+## 9. Что защищено и чего нет
 
 Защищено:
 
@@ -143,21 +187,23 @@ curl -k -u hh:ПАРОЛЬ -o /dev/null -w '%{http_code}\n' https://127.0.0.1:84
 
 Честные ограничения:
 
-- сертификат самоподписанный, поэтому браузер предупреждает при входе; платного
-  сертификата на IP не требуется, но и «зелёного замка» не будет;
+- сертификат самоподписанный, поэтому браузер предупреждает при входе; доверенный
+  сертификат на IP выпускается `deploy/letsencrypt-ip.sh` (Let's Encrypt, профиль
+  `shortlived`: 6 дней, продление автоматическое);
 - Basic Auth не даёт «выхода» из сессии, кроме закрытия браузера; один пользователь,
   без 2FA и разграничения ролей;
 - весь сетевой трафик — один порт; отдельного API-токена нет (не нужен для одного человека);
 - если позже появится домен, лучше поставить `nginx` с Let's Encrypt и проксировать на
   `127.0.0.1:8765` (тогда в `.env` достаточно `WEB_AUTH_*`, а `WEB_TLS_*` убрать).
 
-## 9. Если IP сменился
+## 10. Если IP сменился
 
 Сертификат выписан на конкретный IP. После смены адреса:
 
 ```bash
-rm /opt/hh-assistant/config/tls.crt /opt/hh-assistant/config/tls.key
-bash /root/hh-src/deploy/install.sh     # выпустит новый сертификат на текущий IP
+rm -f /opt/hh-assistant/config/tls.crt /opt/hh-assistant/config/tls.key
+bash /root/hh-src/deploy/install.sh               # самоподписанный, чтобы сервис поднялся
+bash /root/hh-src/deploy/letsencrypt-ip.sh        # доверенный на новый IP (новый адрес определится сам)
 ```
 
 Скрипт берёт адрес из `https://api.ipify.org`, при недоступности — из `hostname -I`.

@@ -32,13 +32,16 @@ tbody tr:hover td{background:rgba(246,240,255,.72)}
 .score{font-weight:700}
 .s-high{color:#0f7a3d}.s-mid{color:#96660a}.s-low{color:#a01a2c}
 a{color:#6b3fc4;text-decoration:none}a:hover{text-decoration:underline}
-.btn{display:inline-block;padding:8px 13px;border-radius:10px;border:1px solid rgba(120,90,170,.25);
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:36px;
+padding:0 14px;border-radius:10px;border:1px solid rgba(120,90,170,.25);
 background:rgba(255,255,255,.92);color:#3a2d52;cursor:pointer;font-size:13px;font-family:inherit;
+line-height:1;white-space:nowrap;text-decoration:none;
 box-shadow:0 2px 8px rgba(84,52,140,.08);transition:transform .12s ease,box-shadow .12s ease}
-.btn:hover{transform:translateY(-1px);box-shadow:0 6px 16px rgba(84,52,140,.16)}
+.btn:hover{transform:translateY(-1px);box-shadow:0 6px 16px rgba(84,52,140,.16);text-decoration:none}
 .btn.primary{background:linear-gradient(135deg,#8b5cf6,#d06ef0);border-color:transparent;color:#fff}
-select{padding:7px 10px;border-radius:10px;border:1px solid rgba(120,90,170,.25);
-background:rgba(255,255,255,.92);color:#3a2d52;font-size:13px;font-family:inherit}
+select{height:36px;padding:0 10px;border-radius:10px;border:1px solid rgba(120,90,170,.25);
+background:rgba(255,255,255,.92);color:#3a2d52;font-size:13px;font-family:inherit;line-height:1;
+max-width:100%}
 textarea{width:100%;min-height:420px;padding:12px;border:1px solid rgba(120,90,170,.22);border-radius:12px;
 background:rgba(255,255,255,.94);color:#2b2438;font-family:ui-monospace,Consolas,monospace;
 font-size:13px;line-height:1.5}
@@ -46,8 +49,15 @@ font-size:13px;line-height:1.5}
 color:#5d5470;font-size:13px;box-shadow:0 4px 16px rgba(84,52,140,.08)}
 .meta b{color:#2b2438}
 .actions{display:flex;gap:10px;margin:12px 0;flex-wrap:wrap;align-items:center}
+.actions form{display:flex;gap:10px;align-items:center;margin:0}
+.toolbar{display:flex;gap:10px;margin:14px 0;padding:10px 12px;flex-wrap:wrap;align-items:center;
+border-radius:14px;background:rgba(255,255,255,.80);border:1px solid rgba(255,255,255,.72);
+backdrop-filter:blur(12px) saturate(1.1);box-shadow:0 8px 24px rgba(84,52,140,.10)}
+.toolbar .buttons{display:flex;gap:10px;flex-wrap:wrap;align-items:center;flex:1 1 100%}
+header .btn{height:32px;padding:0 12px;font-size:12.5px}
 .card{background:rgba(255,255,255,.84);backdrop-filter:blur(12px);border:1px solid rgba(255,255,255,.72);
 border-radius:14px;padding:16px;margin-bottom:14px;box-shadow:0 10px 28px rgba(84,52,140,.12)}
+.card table{display:table;width:100%}
 .reasons{font-size:12.5px;color:#5d5470}
 textarea.queries-text{min-height:140px}
 @media (max-width:760px){main{padding:12px}th,td{padding:7px 9px;font-size:12.5px}
@@ -134,20 +144,44 @@ def _options(pairs, current=""):
 
 
 def _region_options(conn):
-    """Регионы: справочник субъектов РФ + счётчики из базы."""
+    """Регионы для единственного селекта: id субъекта hh + счётчики из базы.
+
+    Значение option — id региона hh (он же уходит в сбор), подпись — название
+    с числом вакансий. Регионы, которых нет в справочнике, отдаются названием:
+    такой вариант годится только для фильтра.
+    """
     counts = {row["region"]: row["cnt"] for row in storage.region_counts(conn) if row["region"]}
     total = conn.execute("SELECT COUNT(*) FROM vacancies").fetchone()[0]
-    pairs = [("", "все регионы (%d)" % total)]
+    pairs = [(areas.ALL_RUSSIA[0], "вся Россия (%d)" % total)]
     known = set()
     for area_id, name in areas.cached():
         if area_id == areas.ALL_RUSSIA[0]:
             continue
         known.add(name)
-        pairs.append((name, "%s (%d)" % (name, counts[name]) if counts.get(name) else name))
+        pairs.append((area_id, "%s (%d)" % (name, counts[name]) if counts.get(name) else name))
     # регионы из базы, которых нет в справочнике (например, «Москва» вместо субъекта)
     for name in sorted(set(counts) - known):
         pairs.append((name, "%s (%d)" % (name, counts[name])))
     return pairs
+
+
+def _resolve_region(value):
+    """Значение селекта региона -> (id для формы, название субъекта для фильтра).
+
+    Принимает и id ('2019'), и название ('Московская область', старые ссылки).
+    «Россия» (113) означает «без фильтра по региону».
+    """
+    text = str(value or "").strip()
+    if not text:
+        return "", ""
+    if text.isdigit():
+        area_id = int(text)
+        if area_id == areas.ALL_RUSSIA[0]:
+            return str(area_id), ""
+        name = areas.name_of(area_id)
+        return (str(area_id), name) if name else (str(area_id), "")
+    found = areas.region_id(text)
+    return (str(found) if found else "", text)
 
 
 def _city_options(conn, region):
@@ -161,21 +195,35 @@ def _city_options(conn, region):
 
 
 def render_index(conn, threshold, limit, msg="", area="", region=""):
+    region_value, region_name = _resolve_region(region)
     rows = queue.next_batch(conn, threshold=threshold, limit=limit,
-                            region=region, area=area)
+                            region=region_name, area=area)
     st = storage.stats(conn)
     left = queue.can_send_today(conn, get_settings().daily_limit)
-    collect_regions = _options([(aid, name) for aid, name in areas.cached()], 113)
-    actions = (
-        "<form method='post' action='/run/collect' style='display:inline'>"
-        "<select name='area' title='регион сбора'>%s</select>"
-        "<button class='btn' type='submit'>Собрать вакансии</button></form>"
-        "<form method='post' action='/run/score' style='display:inline'>"
-        "<button class='btn' type='submit'>Оценить</button></form>"
-        "<form method='post' action='/run/letters' style='display:inline'>"
-        "<button class='btn' type='submit'>Сгенерировать письма</button></form>"
+    # Один селект региона на всю страницу: он же задаёт регион сбора (POST /run/collect)
+    # и фильтр списка. Кнопки действий — в той же форме через formaction, поэтому
+    # высота и отступы у селектов и кнопок одинаковые.
+    toolbar = (
+        "<form method='get' action='/' class='toolbar'>"
+        "<select name='region' title='регион: сбор и фильтр списка'"
+        " onchange='this.form.city.value=\"\";this.form.submit()'>%s</select>"
+        "<select name='city' title='город' onchange='this.form.submit()'>%s</select>"
+        "<select name='threshold' title='порог оценки' onchange='this.form.submit()'>%s</select>"
+        "<span class='buttons'>"
+        "<button class='btn primary' type='submit' formaction='/run/collect'"
+        " formmethod='post'>Собрать вакансии</button>"
+        "<button class='btn' type='submit' formaction='/run/score'"
+        " formmethod='post'>Оценить</button>"
+        "<button class='btn' type='submit' formaction='/run/letters'"
+        " formmethod='post'>Сгенерировать письма</button>"
         "<a class='btn' href='/export'>Экспорт писем в файлы</a>"
-        "<a class='btn' href='/funnel'>Воронка и ответы</a>" % collect_regions
+        "<a class='btn' href='/funnel'>Воронка и ответы</a>"
+        "</span>"
+        "</form>" % (
+            _options(_region_options(conn), region_value),
+            _options(_city_options(conn, region_name), area),
+            _options([(0, "порог: показать все"), (40, "порог: 40"),
+                      (55, "порог: 55"), (70, "порог: 70")], threshold))
     )
     parts = [
         "<html><head><meta charset='utf-8'>"
@@ -185,7 +233,7 @@ def render_index(conn, threshold, limit, msg="", area="", region=""):
         "ответов: %d · сегодня: %d · остаток лимита: %d</span><span>%s</span></header><main>" % (
             st["vacancies"], st["scored"], st["letters"], st["applications"], st["replied"],
             st["sent_today"], left, esc(llm.describe(get_settings()))),
-        "<div class='actions'>%s</div>" % actions,
+        toolbar,
         _queries_block(),
     ]
     if msg:
@@ -193,17 +241,6 @@ def render_index(conn, threshold, limit, msg="", area="", region=""):
     warning = parser_warning(conn)
     if warning:
         parts.append("<div class='card'>%s</div>" % esc(warning))
-    filters = (
-        "<div class='actions'><form method='get' action='/' style='display:inline'>"
-        "<select name='region' title='регион' onchange='this.form.submit()'>%s</select>"
-        " <select name='area' title='город' onchange='this.form.submit()'>%s</select>"
-        " <select name='threshold' title='порог оценки' onchange='this.form.submit()'>%s</select>"
-        "</form></div>" % (_options(_region_options(conn), region),
-                           _options(_city_options(conn, region), area),
-                           _options([(0, "порог: показать все"), (40, "порог: 40"),
-                                     (55, "порог: 55"), (70, "порог: 70")], threshold))
-    )
-    parts.append(filters)
     above, scored = storage.score_counts(conn, threshold)
     parts.append(
         "<div class='meta'>собрано в базе: <b>%d</b> · оценено: <b>%d</b> · "
@@ -646,7 +683,7 @@ class Handler(BaseHTTPRequestHandler):
                 qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
                 threshold = int(qs.get("threshold", [get_settings().score_threshold])[0])
                 msg = qs.get("msg", [""])[0]
-                area = qs.get("area", [""])[0]
+                area = qs.get("city", qs.get("area", [""]))[0]
                 region = qs.get("region", [""])[0]
                 self._send(render_index(conn, threshold, limit=50, msg=msg, area=area,
                                         region=region))
@@ -721,8 +758,10 @@ class Handler(BaseHTTPRequestHandler):
             elif path.startswith("/run/"):
                 kind = path.split("/")[2]
                 form = self._form()
-                area = (form.get("area") or [""])[0]
-                report = run_action(kind, conn, area=area)
+                # единый селект региона (id субъекта); поле area — совместимость со старыми формами
+                value = (form.get("region") or form.get("area") or [""])[0]
+                area_id, _region = _resolve_region(value)
+                report = run_action(kind, conn, area=area_id)
                 self._redirect("/?msg=" + urllib.parse.quote(report))
             else:
                 self._send("not found", status=404)
