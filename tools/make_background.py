@@ -1,17 +1,19 @@
 # -*- coding: utf-8 -*-
-"""Генератор фона для веб-интерфейса: розово-сиреневые облака.
+"""Генератор фона для веб-интерфейса.
 
-Запускается вручную, только для перегенерации картинки:
+Два режима:
 
-    python tools/make_background.py
+    python tools/make_background.py                     # процедурные розово-сиреневые облака
+    python tools/make_background.py --from photo.jpg    # фон из фотографии (cover-кроп 1600x1000)
 
 Нужен Pillow (в рантайме приложения он не используется — готовый файл
 `hhassist/static/bg.jpg` лежит в репозитории).
 """
+import argparse
 import os
 import random
 
-from PIL import Image, ImageChops, ImageDraw, ImageFilter
+from PIL import Image, ImageChops, ImageDraw, ImageEnhance, ImageFilter
 
 W, H = 1600, 1000          # итоговый размер (2x для экранов с ретиной)
 SEED = 20261024
@@ -195,15 +197,67 @@ def _fbmp(rnd, size, octaves, blur):
     return img.filter(ImageFilter.GaussianBlur(blur))
 
 
-def main():
-    img = build()
+def _cover(img, size):
+    """Вписать с обрезкой: заполнить кадр целиком, лишнее срезать по центру."""
+    w, h = size
+    sw, sh = img.size
+    k = max(w / float(sw), h / float(sh))
+    nw, nh = max(w, int(round(sw * k))), max(h, int(round(sh * k)))
+    img = img.resize((nw, nh), Image.LANCZOS)
+    left, top = (nw - w) // 2, (nh - h) // 2
+    return img.crop((left, top, left + w, top + h))
+
+
+def _polish(img):
+    """Компенсация апскейла: контурная резкость, чуть насыщеннее и контрастнее."""
+    img = img.filter(ImageFilter.UnsharpMask(radius=2.0, percent=65, threshold=2))
+    img = ImageEnhance.Sharpness(img).enhance(1.15)
+    img = ImageEnhance.Color(img).enhance(1.06)
+    return ImageEnhance.Contrast(img).enhance(1.03)
+
+
+def _shade(img, top=0.18, bottom=0.30):
+    """Мягкое затемнение верхней и нижней полос: панели интерфейса читаются лучше."""
+    w, h = img.size
+    column = Image.new("L", (1, h))
+    px = column.load()
+    for y in range(h):
+        t = y / float(h - 1)
+        value = top * max(0.0, (0.35 - t) / 0.35) ** 1.6
+        value += bottom * max(0.0, (t - 0.62) / 0.38) ** 1.5
+        px[0, y] = int(round(255 * min(0.5, value)))
+    mask = column.resize((w, h), Image.BILINEAR)
+    night = Image.new("RGB", img.size, (12, 16, 30))
+    return Image.composite(night, img, mask)
+
+
+def from_photo(src, size=(W, H)):
+    """Фон из фотографии: cover-кроп, лёгкая доводка, затемнение краёв."""
+    with Image.open(src) as photo:
+        img = photo.convert("RGB")
+    img = _cover(img, size)
+    return _shade(_polish(img))
+
+
+def save(img, quality=86):
     out_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                            "hhassist", "static")
     if not os.path.isdir(out_dir):
         os.makedirs(out_dir)
     full = os.path.join(out_dir, "bg.jpg")
-    img.save(full, "JPEG", quality=88, optimize=True, progressive=True)
-    print("saved %s (%d bytes)" % (full, os.path.getsize(full)))
+    img.save(full, "JPEG", quality=quality, optimize=True, progressive=True)
+    print("saved %s (%d bytes, %dx%d)"
+          % (full, os.path.getsize(full), img.size[0], img.size[1]))
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description="Фон веб-интерфейса.")
+    ap.add_argument("--from", dest="src", metavar="PATH",
+                    help="фотография-исходник (jpg/png/webp); без неё — рисуем облака")
+    ap.add_argument("--quality", type=int, default=86, help="качество JPEG (по умолчанию 86)")
+    args = ap.parse_args(argv)
+    img = from_photo(args.src) if args.src else build()
+    save(img, quality=args.quality)
 
 
 if __name__ == "__main__":

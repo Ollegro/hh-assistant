@@ -19,7 +19,7 @@
 | `hhassist/jobs.py` | пакетные действия (сбор по всем запросам, оценка новых, письма, экспорт) — один код для CLI и веб-интерфейса, одна транзакция на прогон |
 | `hhassist/analytics.py` | воронка (найдено → оценено → письмо → отправлено → ответ), конверсии, разрезы по баллам/форматам/компаниям, CSV-выгрузка |
 | `hhassist/web.py` | локальный веб-интерфейс: список вакансий, оценка, письмо, статусы отклика, страница «Воронка» |
-| `hhassist/static/bg.jpg` | фон интерфейса (розово-сиреневые облака), отдаётся маршрутом `GET /static/<файл>` под тем же входом, что и страницы; пересобрать — `python tools/make_background.py` (Pillow нужен только для этого, в рантайме не используется) |
+| `hhassist/static/bg.jpg` | фон интерфейса (город по фото заказчика), отдаётся маршрутом `GET /static/<файл>` под тем же входом, что и страницы; пересобрать — `python tools/make_background.py` (облака) или `python tools/make_background.py --from <фото>` (Pillow нужен только для этого, в рантайме не используется) |
 | `cli.py` | команды: `collect` (`--source auto/api/html`), `score`, `letters`, `serve`, `export` (`--csv`), `funnel`, `mark`, `areas`, `stats`, `api-check` |
 
 ## Как этим пользоваться (два режима)
@@ -328,7 +328,7 @@ APPLICATION-hh-assistant/     # приложение (stdlib-only) — коре�
                               #          storage, queue, analytics, jobs (пакетные действия), web, config, llm
   config/                     # profile.json (личный, в .gitignore), profile.example.json, queries.txt
   data/, out/                 # база SQLite, выгруженные письма и CSV (в .gitignore)
-  tests/                      # 203 юнит-теста (unittest, stdlib) + fixtures/
+  tests/                      # 210 юнит-тестов (unittest, stdlib) + fixtures/
   tools/                      # лаунчер, проверки (сервер, serve, LLM, парсер, токен, скоринг)
   deploy/                     # размещение на сервере: install.sh, systemd-юнит, README по Selectel
   PLAN.md, DEVLOG.md, README.md, LICENSE, .gitignore
@@ -341,7 +341,7 @@ APPLICATION-hh-assistant/     # приложение (stdlib-only) — коре�
 
 ```bash
 cd APPLICATION-hh-assistant
-python -m unittest discover -s tests -v   # 184 теста, без сети и без зависимостей
+python -m unittest discover -s tests -v   # 210 тестов, без сети и без зависимостей
 ```
 
 Проверяются: HTML-парсер на сохранённой фикстуре, сопоставление с профилем (`matching`),

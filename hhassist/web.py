@@ -15,7 +15,7 @@ from .config import BASE, get_settings
 CSS = """
 *{box-sizing:border-box}
 body{font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:0;min-height:100vh;color:#2b2438;
-background:#dccbf5 url('/static/bg.jpg') center/cover no-repeat fixed}
+background:#c9d6e2 url('/static/bg.jpg?v=2') center/cover no-repeat fixed}
 header{position:sticky;top:0;z-index:20;display:flex;gap:18px;align-items:center;flex-wrap:wrap;
 padding:14px 22px;background:rgba(255,255,255,.78);backdrop-filter:blur(14px) saturate(1.15);
 border-bottom:1px solid rgba(255,255,255,.65);box-shadow:0 6px 24px rgba(84,52,140,.10)}
