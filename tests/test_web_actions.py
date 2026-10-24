@@ -8,13 +8,18 @@ import json
 import os
 import sys
 import tempfile
+import threading
 import unittest
+import urllib.error
+import urllib.parse
+import urllib.request
+from http.server import ThreadingHTTPServer
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _bootstrap import APP, sample_vacancy  # noqa: E402,F401
 
-from hhassist import collector, queue, storage, web  # noqa: E402
+from hhassist import collector, letters, queue, storage, web  # noqa: E402
 from hhassist.config import DEFAULT_PROFILE, Settings  # noqa: E402
 
 
@@ -276,8 +281,20 @@ class StatusActionTest(WebBase):
         self.assertIn("отказ", web.render_card(self.conn, "1"))
         self.assertIn("статус: отказ", web.render_card(self.conn, "1", msg="статус: отказ"))
 
-    def test_index_links_to_funnel(self):
-        self.assertIn("/funnel", web.render_index(self.conn, 55, 50))
+    def test_index_has_no_funnel_button(self):
+        """«Воронка» убрана из интерфейса как лишняя: остались CLI и прямой адрес."""
+        page = web.render_index(self.conn, 55, 50)
+        self.assertNotIn("/funnel", page)
+        self.assertNotIn("Воронка", page)
+
+    def test_card_offers_single_vacancy_actions(self):
+        """В карточке — кнопки только для этой вакансии, а не для всей базы."""
+        self.add()
+        page = web.render_card(self.conn, "1")
+        self.assertIn("action='/run/letters/1'", page)
+        self.assertIn("action='/run/score/1'", page)
+        self.assertIn("Сгенерировать письмо", page)
+        self.assertNotIn("/funnel", page)
 
     def test_funnel_page_renders(self):
         self.add()
@@ -293,6 +310,100 @@ class StatusActionTest(WebBase):
         page = web.render_funnel(self.conn)
         self.assertIn("воронка откликов", page)
         self.assertIn("Таких откликов нет", page)
+
+
+class SingleVacancyActionTest(WebBase):
+    """Кнопки карточки: оценка и письмо только для одной вакансии, не для всей базы."""
+
+    def add(self, **over):
+        for vid in ("1", "2"):
+            storage.upsert_vacancy(self.conn, sample_vacancy(id=vid, **over))
+
+    def test_score_one_scores_only_target(self):
+        self.add()
+        report = web.run_action("score", self.conn, vacancy_id="1")
+        self.assertIn("балл", report)
+        rows = {row["vacancy_id"] for row in self.conn.execute("SELECT vacancy_id FROM scores")}
+        self.assertEqual(rows, {"1"})
+
+    def test_letter_one_writes_only_target(self):
+        self.add()
+        with mock.patch.object(letters, "make_letter",
+                               lambda v, profile, s: ("письмо %s" % v["id"], "test")):
+            report = web.run_action("letters", self.conn, vacancy_id="1")
+        self.assertIn("письмо готово", report)
+        rows = {row["vacancy_id"] for row in self.conn.execute("SELECT vacancy_id FROM letters")}
+        self.assertEqual(rows, {"1"})
+
+    def test_missing_vacancy_reported(self):
+        self.assertIn("не найдена", web.run_action("score", self.conn, vacancy_id="404"))
+        self.assertIn("не найдена", web.run_action("letters", self.conn, vacancy_id="404"))
+
+    def test_second_run_reports_busy_instead_of_crashing(self):
+        """Раньше второй клик падал на блокировке SQLite и отдавал пустую страницу."""
+        self.add()
+        with web.RUN_LOCK:
+            report = web.run_action("score", self.conn, vacancy_id="1")
+        self.assertIn("уже выполняется", report)
+        self.assertEqual(self.stored("scores"), 0)
+
+    def test_edited_letter_is_kept(self):
+        """Правку человека повторная генерация не затирает."""
+        self.add()
+        storage.save_letter(self.conn, "1", "моя правка", "manual", edited=True)
+        with mock.patch.object(letters, "make_letter",
+                               side_effect=AssertionError("генерация не нужна")):
+            report = web.run_action("letters", self.conn, vacancy_id="1")
+        self.assertIn("сохранена ваша правка", report)
+        self.assertEqual(storage.vacancy_with_letter(self.conn, "1")["letter"], "моя правка")
+
+
+class DatabaseLockTest(unittest.TestCase):
+    """SQLite работает в WAL: читатели не ждут писателя, писатель ждёт своей очереди."""
+
+    def test_connect_enables_wal_and_busy_timeout(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        with mock.patch.object(storage, "DB_PATH", os.path.join(tmp.name, "wal.sqlite3")):
+            conn = storage.connect()
+            self.addCleanup(conn.close)
+            mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+            busy = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+        self.assertEqual(mode.lower(), "wal")
+        self.assertGreaterEqual(busy, 5000)
+
+
+class ErrorPageTest(WebBase):
+    """Ошибка обработчика отдаёт страницу с текстом, а не пустой ответ."""
+
+    def setUp(self):
+        super().setUp()
+        quiet = mock.patch.object(web.Handler, "log_message", lambda *a, **k: None)
+        quiet.start()
+        self.addCleanup(quiet.stop)
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), web.Handler)
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.base = "http://127.0.0.1:%d" % self.server.server_address[1]
+
+    def test_get_error_returns_page_with_text(self):
+        with mock.patch.object(web, "render_index", side_effect=RuntimeError("boom")):
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                urllib.request.urlopen(self.base + "/", timeout=20)
+        self.assertEqual(ctx.exception.code, 500)
+        body = ctx.exception.read().decode("utf-8")
+        self.assertIn("Не получилось выполнить запрос", body)
+        self.assertIn("boom", body)
+
+    def test_post_error_redirects_with_message(self):
+        data = urllib.parse.urlencode({"region": "113"}).encode("utf-8")
+        request = urllib.request.Request(self.base + "/run/score", data=data, method="POST")
+        with mock.patch.object(web, "start_action", side_effect=RuntimeError("boom")):
+            with urllib.request.urlopen(request, timeout=20) as response:
+                page = response.read().decode("utf-8")
+        self.assertIn("ошибка: RuntimeError: boom", page)
+
 
 
 if __name__ == "__main__":

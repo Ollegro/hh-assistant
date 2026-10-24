@@ -129,8 +129,9 @@ class ToolbarTest(Base):
         self.assertIn("class='toolbar'", page)
         self.assertLess(page.index("class='toolbar'"), page.index("Собрать вакансии"))
         for label in ("Собрать вакансии", "Оценить", "Сгенерировать письма",
-                      "Экспорт писем в файлы", "Воронка и ответы"):
+                      "Экспорт писем в файлы"):
             self.assertIn(label, page)
+        self.assertNotIn("Воронка", page)  # лишняя функция убрана из панели
         self.assertEqual(page.count("formaction='/run/"), 3)
 
     def test_css_keeps_same_height_for_buttons_and_selects(self):
@@ -178,13 +179,19 @@ class CollectFromToolbarTest(Base):
             status, page = self.post("/run/collect", {"region": "1", "city": "",
                                                       "threshold": "55"})
         self.assertEqual(status, 200)
-        self.assertIn("собрано вакансий", page)
+        self.assertIn("запущено: сбор вакансий", page)
+        self.assertTrue(web.wait_run(30), "фоновый сбор не завершился")
+        self.assertIn("собрано вакансий", web.RUN["report"])
         self.assertEqual(calls[0]["area"], [1])
 
     def test_score_button_works_from_same_toolbar(self):
+        """Пакетная оценка уходит в фон: страница отвечает сразу, прогон идёт отдельно."""
         status, page = self.post("/run/score", {"region": "113"})
         self.assertEqual(status, 200)
-        self.assertIn("оценено новых", page)
+        self.assertIn("запущено: оценка", page)
+        self.assertTrue(web.wait_run(30), "фоновый прогон не завершился")
+        self.assertEqual(web.RUN["error"], "")
+        self.assertIn("оценено новых", web.RUN["report"])
 
 
 if __name__ == "__main__":

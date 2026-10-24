@@ -6,6 +6,9 @@ import html
 import ipaddress
 import os
 import ssl
+import threading
+import time
+import traceback
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -217,7 +220,6 @@ def render_index(conn, threshold, limit, msg="", area="", region=""):
         "<button class='btn' type='submit' formaction='/run/letters'"
         " formmethod='post'>Сгенерировать письма</button>"
         "<a class='btn' href='/export'>Экспорт писем в файлы</a>"
-        "<a class='btn' href='/funnel'>Воронка и ответы</a>"
         "</span>"
         "</form>" % (
             _options(_region_options(conn), region_value),
@@ -228,6 +230,7 @@ def render_index(conn, threshold, limit, msg="", area="", region=""):
     parts = [
         "<html><head><meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+        + ("<meta http-equiv='refresh' content='5'>" if RUN["running"] else "") +
         "<title>hh-assistant</title><style>%s</style></head><body>" % CSS,
         "<header><b>hh-assistant</b><span>вакансий: %d · оценено: %d · писем: %d · откликов: %d · "
         "ответов: %d · сегодня: %d · остаток лимита: %d</span><span>%s</span></header><main>" % (
@@ -238,6 +241,9 @@ def render_index(conn, threshold, limit, msg="", area="", region=""):
     ]
     if msg:
         parts.append("<div class='card'>%s</div>" % esc(msg))
+    progress = run_progress()
+    if progress:
+        parts.append("<div class='meta'>%s</div>" % esc(progress))
     warning = parser_warning(conn)
     if warning:
         parts.append("<div class='card'>%s</div>" % esc(warning))
@@ -432,12 +438,95 @@ def _queries_block():
         % (esc(text), note))
 
 
-def run_action(kind, conn, limit=None, area=None):
+# Один прогон за раз: сбор/оценка/письма пишут в SQLite и ходят в LLM минутами.
+RUN_LOCK = threading.Lock()
+RUN_BUSY = ("уже выполняется другое действие (сбор, оценка или письма) — "
+            "дождитесь его окончания и повторите")
+RUN_TITLES = {"collect": "сбор вакансий", "score": "оценка", "letters": "генерация писем"}
+
+# Состояние фонового прогона: страница отвечает сразу и показывает ход работы.
+RUN = {"kind": "", "title": "", "done": 0, "started": "", "report": "", "error": "",
+       "running": False}
+
+
+def _run_tick(*_args):
+    RUN["done"] += 1
+
+
+def wait_run(timeout=60.0):
+    """Ждёт завершения фонового прогона. True — дождались. Нужен тестам и проверкам."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not RUN["running"]:
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def start_action(kind, area=None, vacancy_id=""):
+    """Запускает пакетное действие в фоне и сразу возвращает отчёт для страницы.
+
+    Синхронный прогон держал HTTP-соединение минутами: при обрыве сети браузер
+    показывал пустую страницу. Теперь ответ уходит сразу, а ход работы виден
+    в плашке на главной (страница обновляется сама).
+    """
+    if not RUN_LOCK.acquire(blocking=False):
+        return RUN_BUSY
+    RUN.update({"kind": kind, "title": RUN_TITLES.get(kind, kind), "done": 0,
+                "started": storage.now()[:16].replace("T", " "), "report": "",
+                "error": "", "running": True})
+
+    def worker():
+        conn = storage.connect()  # соединение SQLite живёт в своём потоке
+        try:
+            RUN["report"] = _run_action(kind, conn, area=area, vacancy_id=vacancy_id,
+                                        on_item=_run_tick)
+        except Exception as exc:  # ошибка прогона не должна ломать страницу
+            RUN["error"] = "%s: %s" % (type(exc).__name__, exc)
+            traceback.print_exc()
+        finally:
+            conn.close()
+            RUN["running"] = False
+            RUN_LOCK.release()
+
+    threading.Thread(target=worker, daemon=True).start()
+    return "запущено: %s — страница обновится сама" % RUN["title"]
+
+
+def run_progress():
+    """Плашка о прогоне для страницы: идёт / ошибка / результат последнего."""
+    if RUN["running"]:
+        return "идёт %s · обработано: %d · старт: %s" % (RUN["title"], RUN["done"],
+                                                        RUN["started"])
+    if RUN["error"]:
+        return "ошибка (%s): %s" % (RUN["title"], RUN["error"])
+    if RUN["report"]:
+        return "последний прогон — %s" % RUN["report"]
+    return ""
+
+
+def run_action(kind, conn, limit=None, area=None, vacancy_id="", on_item=None):
     """Выполняет действие из веб-интерфейса: collect / score / letters. Возвращает отчёт.
 
     area — id региона hh для сбора (пусто — регионы из настроек, по умолчанию вся Россия).
+    vacancy_id — действие только для одной вакансии (кнопки в карточке).
+
+    Одновременно идёт только один прогон: повторные клики по «Оценить» раньше
+    запускали второй поток, тот падал на блокировке SQLite, и браузер получал
+    пустую страницу вместо ответа.
     """
+    if not RUN_LOCK.acquire(blocking=False):
+        return RUN_BUSY
+    try:
+        return _run_action(kind, conn, limit=limit, area=area, vacancy_id=vacancy_id,
+                           on_item=on_item)
+    finally:
+        RUN_LOCK.release()
+
+
+def _run_action(kind, conn, limit=None, area=None, vacancy_id="", on_item=None):
     s = get_settings()
+    tick = on_item or (lambda *args: None)
 
     if kind == "collect":
         lim = limit or s.collect_limit
@@ -448,7 +537,7 @@ def run_action(kind, conn, limit=None, area=None):
             return "нет поисковых запросов: заполните config/queries.txt"
         area_ids = [int(area)] if str(area or "").strip().isdigit() else None
         saved, found, source, notes = jobs.collect_queries(conn, queries, s, limit=lim,
-                                                           area_ids=area_ids)
+                                                           area_ids=area_ids, on_item=tick)
         where = areas.name_of(area_ids[0]) if area_ids else "вся Россия"
         storage.log_event(conn, "collect", {"queries": queries, "saved": saved,
                                             "found": found, "source": source,
@@ -460,7 +549,15 @@ def run_action(kind, conn, limit=None, area=None):
         return report
 
     if kind == "score":
-        done, total = jobs.score_pending(conn, s)
+        if vacancy_id:
+            res = jobs.score_one(conn, s, vacancy_id)
+            if not res:
+                return "вакансия не найдена: %s" % vacancy_id
+            score, verdict = res
+            storage.log_event(conn, "score_one", {"vacancy_id": vacancy_id, "score": score,
+                                                  "from": "web"})
+            return "вакансия %s: балл %d (%s)" % (vacancy_id, score, verdict)
+        done, total = jobs.score_pending(conn, s, on_item=tick)
         storage.log_event(conn, "score", {"count": done, "model": s.llm_model or "rules",
                                           "from": "web"})
         report = "оценено новых: %d (всего оценено: %d)" % (done, total)
@@ -469,7 +566,18 @@ def run_action(kind, conn, limit=None, area=None):
         return report
 
     if kind == "letters":
-        made = jobs.make_letters(conn, s, limit=50)
+        if vacancy_id:
+            res = jobs.make_letter_for(conn, s, vacancy_id)
+            if not res:
+                return "вакансия не найдена: %s" % vacancy_id
+            text, model, kept = res
+            storage.log_event(conn, "letter_one", {"vacancy_id": vacancy_id, "model": model,
+                                                   "chars": len(text), "kept_edit": kept,
+                                                   "from": "web"})
+            if kept:
+                return "письмо не изменено: сохранена ваша правка"
+            return "письмо готово: %d символов (модель: %s)" % (len(text), model or "offline")
+        made = jobs.make_letters(conn, s, limit=50, on_item=tick)
         storage.log_event(conn, "letters", {"count": made, "model": s.llm_model or "offline",
                                             "from": "web"})
         return "создано писем: %d" % made
@@ -482,9 +590,12 @@ def render_card(conn, vacancy_id, msg=""):
     if not row:
         return None
     letter = row["letter"] or ""
-    note = "текст сгенерирован"
     if row["letter_edited"]:
         note = "правка сохранена: %s" % (row["letter_edited_at"] or "")[:16].replace("T", " ")
+    elif letter:
+        note = "текст сгенерирован"
+    else:
+        note = "письма пока нет — нажмите «Сгенерировать письмо»"
     reasons = row["reasons"] or ""
     from . import matching
     match_line = matching.explain(dict(row), get_settings().profile) or "нет данных"
@@ -500,10 +611,11 @@ def render_card(conn, vacancy_id, msg=""):
     parts = [
         "<html><head><meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+        + ("<meta http-equiv='refresh' content='5'>" if RUN["running"] else "") +
         "<title>%s</title><style>%s</style></head><body>" % (esc(row["title"]), CSS),
-        "<header><b><a href='/'>← к списку</a></b><span>%s</span>"
-        "<a class='btn' href='/funnel'>Воронка</a></header><main>" % esc(row["company"]),
+        "<header><b><a href='/'>← к списку</a></b><span>%s</span></header><main>" % esc(row["company"]),
         ("<div class='card'>%s</div>" % esc(msg)) if msg else "",
+        ("<div class='meta'>%s</div>" % esc(run_progress())) if run_progress() else "",
         "<div class='card'><div class='meta'><b>%s</b> · %s · опыт: %s · зарплата: %s · "
         "<span class='score %s'>балл %s</span></div>"
         "<div class='reasons'>%s</div></div>" % (
@@ -512,6 +624,13 @@ def render_card(conn, vacancy_id, msg=""):
             fmt_salary(row), score_class(row["score"]), row["score"] if row["score"] is not None else "—",
             esc(reasons)),
         "<div class='card'><div class='reasons'><b>Сопоставление с профилем:</b> %s</div></div>" % esc(match_line),
+        "<div class='card'><div class='meta'><b>Письмо и оценка</b> — действия только для этой вакансии</div>"
+        "<div class='actions'>"
+        "<form method='post' action='/run/letters/%s' style='display:inline'>"
+        "<button class='btn primary' type='submit'>Сгенерировать письмо</button></form>"
+        "<form method='post' action='/run/score/%s' style='display:inline'>"
+        "<button class='btn' type='submit'>Оценить вакансию</button></form>"
+        "</div></div>" % (esc(row["id"]), esc(row["id"])),
         "<div class='card'><div class='reasons'><b>Статус отклика:</b> %s</div>"
         "<div class='actions'>"
         "<form method='post' action='/status/%s' style='display:inline'>"
@@ -601,13 +720,45 @@ class Handler(BaseHTTPRequestHandler):
 
     def _send(self, body, status=200, ctype="text/html; charset=utf-8", headers=None):
         data = body.encode("utf-8") if isinstance(body, str) else body
+        self._responded = True
         self.send_response(status)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
         for name, value in (headers or {}).items():
             self.send_header(name, value)
         self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # браузер закрыл вкладку раньше, чем ушёл ответ
+
+    def _fail(self, exc):
+        """Ошибка обработчика: текст вместо пустой страницы + трейсбек в журнал."""
+        traceback.print_exc()
+        if getattr(self, "_responded", False):
+            return  # ответ уже отправлен, заголовки повторно не пишем
+        text = "ошибка: %s: %s" % (type(exc).__name__, exc)
+        path = urllib.parse.urlparse(self.path).path
+        parts = [part for part in path.split("/") if part]
+        back = "/"
+        if parts[:1] == ["v"] and len(parts) > 1:
+            back = "/v/%s" % urllib.parse.quote(parts[1])
+        elif parts[:1] == ["run"] and len(parts) > 2:
+            back = "/v/%s" % urllib.parse.quote(parts[2])
+        try:
+            if self.command == "POST":
+                self._redirect(back + "?msg=" + urllib.parse.quote(text))
+            else:
+                self._send("<html><head><meta charset='utf-8'>"
+                           "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+                           "<title>ошибка — hh-assistant</title><style>" + CSS + "</style>"
+                           "</head><body><main><div class='card' style='margin-top:10vh'>"
+                           "<b>Не получилось выполнить запрос</b>"
+                           "<p style='color:#5d5470'>" + esc(text) + "</p>"
+                           "<div class='actions'><a class='btn' href='/'>← к списку</a></div>"
+                           "</div></main></body></html>", status=500)
+        except OSError:
+            pass
 
     def _static(self, name):
         """Отдать файл из hhassist/static (только известные расширения)."""
@@ -622,6 +773,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
     def _redirect(self, to):
+        self._responded = True
         self.send_response(303)
         self.send_header("Location", to)
         self.end_headers()
@@ -644,6 +796,7 @@ class Handler(BaseHTTPRequestHandler):
                 "<p style='margin:0;color:#5d5470'>" + esc(text) + "</p>"
                 "</div></main></body></html>")
         data = page.encode("utf-8")
+        self._responded = True
         self.send_response(status)
         if status == 401:
             self.send_header("WWW-Authenticate", 'Basic realm="hh-assistant", charset="UTF-8"')
@@ -671,6 +824,18 @@ class Handler(BaseHTTPRequestHandler):
         return False
 
     def do_GET(self):
+        try:
+            self._get()
+        except Exception as exc:  # без этого браузер получал пустую страницу
+            self._fail(exc)
+
+    def do_POST(self):
+        try:
+            self._post()
+        except Exception as exc:
+            self._fail(exc)
+
+    def _get(self):
         if not self._authorized():
             return
         path = urllib.parse.urlparse(self.path).path
@@ -717,7 +882,7 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             conn.close()
 
-    def do_POST(self):
+    def _post(self):
         if not self._authorized():
             return
         path = urllib.parse.urlparse(self.path).path
@@ -756,13 +921,21 @@ class Handler(BaseHTTPRequestHandler):
                                   {"queries": split_queries(text), "from": "web"})
                 self._redirect("/?msg=" + urllib.parse.quote(report))
             elif path.startswith("/run/"):
-                kind = path.split("/")[2]
+                parts = [part for part in path.split("/") if part]  # /run/letters/<id>
+                kind = parts[1] if len(parts) > 1 else ""
+                target = parts[2] if len(parts) > 2 else ""
                 form = self._form()
                 # единый селект региона (id субъекта); поле area — совместимость со старыми формами
                 value = (form.get("region") or form.get("area") or [""])[0]
                 area_id, _region = _resolve_region(value)
-                report = run_action(kind, conn, area=area_id)
-                self._redirect("/?msg=" + urllib.parse.quote(report))
+                if target:
+                    # одна вакансия: быстрый путь, ответ сразу с результатом
+                    report = run_action(kind, conn, area=area_id, vacancy_id=target)
+                else:
+                    # пакетная работа (сбор, оценка всех, письма) — в фоне
+                    report = start_action(kind, area=area_id)
+                back = "/v/%s" % urllib.parse.quote(target) if target else "/"
+                self._redirect(back + "?msg=" + urllib.parse.quote(report))
             else:
                 self._send("not found", status=404)
         finally:

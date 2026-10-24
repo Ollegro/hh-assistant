@@ -120,10 +120,25 @@ CREATE TABLE IF NOT EXISTS events (
 """
 
 
-def connect():
+# Сколько секунд ждать освобождения базы, прежде чем сообщить «database is locked».
+LOCK_TIMEOUT = 30.0
+
+
+def connect(timeout=LOCK_TIMEOUT):
+    """Соединение с базой в режиме WAL и с ожиданием блокировки.
+
+    Раньше стоял режим по умолчанию (rollback journal) и таймаут 5 с: пока один
+    прогон оценки шёл с открытой транзакцией (запросы к LLM занимают минуты),
+    любой второй клик падал с `database is locked`, и веб-сервер вообще не
+    отправлял ответ — в браузере была пустая страница. WAL позволяет читать
+    во время записи, а busy_timeout даёт писателю дождаться своей очереди.
+    """
     ensure_dirs()
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=timeout)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=%d" % int(timeout * 1000))
+    conn.execute("PRAGMA synchronous=NORMAL")
     conn.executescript(SCHEMA)
     _migrate(conn)
     return conn

@@ -11,6 +11,16 @@ import os
 
 from . import collector, letters as letters_mod, matching, scoring, storage
 
+# Коммит пачками: одна транзакция на весь прогон держала блокировку записи всё
+# время работы LLM (минуты), и параллельный запрос падал с «database is locked».
+COMMIT_EVERY = 5
+
+
+def _commit_progress(conn, done):
+    """Промежуточный коммит: короткие транзакции не мешают соседним запросам."""
+    if done and done % COMMIT_EVERY == 0:
+        conn.commit()
+
 
 def vacancy_dict(row):
     """Строка SQLite -> словарь вакансии (skills хранится как JSON-строка)."""
@@ -60,6 +70,7 @@ def collect_queries(conn, queries, settings, limit=None, pages=None, on_item=Non
         for v in vacancies:
             storage.upsert_vacancy(conn, v, commit=False)
             saved += 1
+            _commit_progress(conn, saved)
             if on_item:
                 on_item(v)
     conn.commit()
@@ -81,6 +92,7 @@ def score_pending(conn, settings, force=False, on_item=None):
         storage.save_score(conn, v["id"], res["score"], res["verdict"], res["reasons"],
                            commit=False)
         done += 1
+        _commit_progress(conn, done)
         if on_item:
             on_item(v, res)
     conn.commit()
@@ -112,6 +124,38 @@ def letter_vacancies(conn, threshold, limit=50, force=False):
     return rows[:limit]
 
 
+def score_one(conn, settings, vacancy_id):
+    """Оценивает одну вакансию из карточки. Возвращает (балл, вердикт) или None."""
+    row = conn.execute("SELECT * FROM vacancies WHERE id = ?", (vacancy_id,)).fetchone()
+    if not row:
+        return None
+    v = vacancy_dict(row)
+    res = scoring.score_vacancy(v, settings.profile, settings)
+    storage.save_score(conn, v["id"], res["score"], res["verdict"], res["reasons"])
+    return res["score"], res["verdict"]
+
+
+def make_letter_for(conn, settings, vacancy_id):
+    """Генерирует письмо для одной вакансии (кнопка в карточке).
+
+    Правленное человеком письмо не затирается: возвращается его текст с пометкой
+    «правка сохранена», новый текст пишется только когда письма ещё нет.
+    Возвращает (текст, модель, признак «уже было письмо») или None, если вакансии нет.
+    """
+    row = conn.execute(
+        """SELECT v.*, COALESCE(l.edited, 0) AS letter_edited, l.text AS letter
+           FROM vacancies v LEFT JOIN letters l ON l.vacancy_id = v.id
+           WHERE v.id = ?""", (vacancy_id,)).fetchone()
+    if not row:
+        return None
+    if row["letter_edited"] and row["letter"]:
+        return row["letter"], "manual", True
+    v = vacancy_dict(row)
+    text, model = letters_mod.make_letter(v, settings.profile, settings)
+    storage.save_letter(conn, v["id"], text, model)
+    return text, model, False
+
+
 def make_letters(conn, settings, threshold=None, limit=50, force=False, on_item=None):
     """Генерирует письма пачкой. Возвращает количество созданных."""
     threshold = settings.score_threshold if threshold is None else threshold
@@ -121,6 +165,7 @@ def make_letters(conn, settings, threshold=None, limit=50, force=False, on_item=
         text, model = letters_mod.make_letter(v, settings.profile, settings)
         storage.save_letter(conn, v["id"], text, model, commit=False)
         made += 1
+        _commit_progress(conn, made)
         if on_item:
             on_item(v, text, model)
     conn.commit()
