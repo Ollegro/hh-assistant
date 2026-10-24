@@ -58,11 +58,83 @@ def http_get(url, retries=3, timeout=40):
 
 
 def clean(text):
-    """HTML -> текст: убрать теги, скрипты, стили, схлопнуть пробелы."""
+    """HTML -> текст: убрать теги, скрипты, стили, схлопнуть пробелы.
+
+    Годится только для однострочных полей (заголовок, компания, зарплата).
+    Описание вакансии разбирает `html_to_text`: там важны абзацы и списки.
+    """
     text = re.sub(r"<(script|style)\b.*?</\1>", " ", text, flags=re.S | re.I)
     text = re.sub(r"<[^>]+>", " ", text)
     text = html_lib.unescape(text)
     return re.sub(r"\s+", " ", text).strip()
+
+
+# Блоки, которые в описании не текст: их содержимое (JS, стили, фреймы) выбрасываем.
+DROP_BLOCKS = re.compile(r"<(script|style|noscript|iframe|svg|template)\b.*?</\1>",
+                         re.S | re.I)
+# Маркеры скриптов hh: если тег <script> обрезался лимитом, ловим начало кода.
+JS_MARKERS = re.compile(r"<script\b|window\.jquery|jQuery[.\w]*\s*=|!function\s*\(", re.I)
+# Блочные теги: на их границах в тексте появляется перевод строки.
+BLOCK_BREAK = re.compile(r"</?(?:p|div|br|li|ul|ol|tr|td|th|h[1-6]|section|article|"
+                         r"blockquote|table)\b[^>]*>", re.I)
+
+
+def html_to_text(fragment):
+    """HTML -> читаемый текст: абзацы, списки и «• » сохраняются.
+
+    Раньше описание шло через `clean()`: он схлопывал все пробелы, и текст
+    вакансии превращался в одно полотно («…иностранных языков; Карьерный
+    рост: …» подряд). Теперь границы блоков становятся переводами строк
+    (каждый абзац и пункт — с новой строки), пустые строки убираются.
+    """
+    text = DROP_BLOCKS.sub(" ", fragment or "")
+    text = re.sub(r"<!--.*?-->", " ", text, flags=re.S)
+    text = re.sub(r"<li\b[^>]*>", "\n• ", text, flags=re.I)
+    text = BLOCK_BREAK.sub("\n", text)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = html_lib.unescape(text).replace("\xa0", " ")
+    lines = [re.sub(r"[ \t]+", " ", line).strip() for line in text.split("\n")]
+    return "\n".join(line for line in lines if line)
+
+
+def _balanced_div_end(text, start):
+    """Конец <div>, начинающегося не раньше start, по балансу вложенных div.
+
+    -1 — закрывающего тега не нашлось (битая или обрезанная разметка).
+    """
+    depth = 0
+    for match in re.finditer(r"<div\b|</div\s*>", text[start:], re.I):
+        if match.group(0)[1] == "/":
+            depth -= 1
+            if depth <= 0:
+                return start + match.end()
+        else:
+            depth += 1
+    return -1
+
+
+def description_of(html_text, limit=4000):
+    """Описание вакансии из карточки hh: только текст блока, без скриптов.
+
+    Раньше regex брал всё до конца документа, и хвост страницы (jQuery, swiper)
+    попадал в описание: 10 вакансий из 147 содержали JS вместо текста. Теперь
+    фрагмент ограничен закрытием блока `data-qa="vacancy-description"`.
+    """
+    marker = 'data-qa="vacancy-description"'
+    pos = html_text.find(marker)
+    if pos == -1:
+        return ""
+    start = html_text.rfind("<div", 0, pos)
+    start = 0 if start == -1 else start
+    end = _balanced_div_end(html_text, start)
+    fragment = html_text[start:end] if end > start else html_text[start:start + 20000]
+    # страховка: если блок обрезан и <script> остался незакрытым — режем по нему
+    fragment = JS_MARKERS.split(fragment, maxsplit=1)[0]
+    text = html_to_text(fragment)
+    if len(text) > limit:
+        cut = text.rfind("\n", 0, limit)
+        text = text[:cut if cut > limit * 0.6 else limit].rstrip()
+    return text
 
 
 def _find(text, pattern, flags=re.S):
@@ -193,8 +265,7 @@ def parse_vacancy(html_text, vacancy_id):
     published = _find(html_text, r'"publicationTimeIso"\s*:\s*"([^"]+)"') or \
                 _find(html_text, r'"publicationTime"\s*:\s*"([^"]+)"')
 
-    desc_match = re.search(r'data-qa="vacancy-description"[^>]*>(.*)', html_text, re.S)
-    description = clean(desc_match.group(1)[:20000])[:4000] if desc_match else ""
+    description = description_of(html_text)
 
     skills = []
     m = re.search(r'"keySkills"\s*:\s*\[(.*?)\]', html_text)

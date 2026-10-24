@@ -28,7 +28,6 @@ def offline_settings(**over):
     data = {
         "profile": dict(DEFAULT_PROFILE),
         "daily_limit": 200,
-        "score_threshold": 55,
         "collect_limit": 20,
         "collect_pages": 1,
         "collect_queries": 0,
@@ -226,7 +225,7 @@ class QueriesEditorTest(WebBase):
 
     def test_index_shows_editor_with_current_queries(self):
         web.save_queries("AI инженер\nLLM инженер\n")
-        page = web.render_index(self.conn, 0, 50)
+        page = web.render_index(self.conn, 50)
         self.assertIn("name='queries'", page)
         self.assertIn("AI инженер", page)
         self.assertIn("LLM инженер", page)
@@ -236,11 +235,11 @@ class QueriesEditorTest(WebBase):
     def test_index_warns_about_collect_queries_limit(self):
         web.save_queries("AI инженер\nLLM инженер\nRAG разработчик\n")
         self.use_settings(offline_settings(collect_queries=2))
-        page = web.render_index(self.conn, 0, 50)
+        page = web.render_index(self.conn, 50)
         self.assertIn("сбор берёт только первые 2", page)
 
     def test_index_falls_back_to_profile_without_file(self):
-        page = web.render_index(self.conn, 0, 50)
+        page = web.render_index(self.conn, 50)
         self.assertIn("профиль (файла config/queries.txt ещё нет)", page)
         self.assertIn("RAG-разработчик", page)  # целевая роль из DEFAULT_PROFILE
 
@@ -282,8 +281,8 @@ class StatusActionTest(WebBase):
         self.assertIn("статус: отказ", web.render_card(self.conn, "1", msg="статус: отказ"))
 
     def test_index_has_no_funnel_button(self):
-        """«Воронка» убрана из интерфейса как лишняя: остались CLI и прямой адрес."""
-        page = web.render_index(self.conn, 55, 50)
+        """«Воронка» удалена из интерфейса: ни кнопки, ни ссылки."""
+        page = web.render_index(self.conn, 50)
         self.assertNotIn("/funnel", page)
         self.assertNotIn("Воронка", page)
 
@@ -296,20 +295,11 @@ class StatusActionTest(WebBase):
         self.assertIn("Сгенерировать письмо", page)
         self.assertNotIn("/funnel", page)
 
-    def test_funnel_page_renders(self):
-        self.add()
-        storage.save_score(self.conn, "1", 90, "откликаться", [])
-        web.apply_status(self.conn, "1", "sent")
-        page = web.render_funnel(self.conn)
-        self.assertIn("воронка откликов", page)
-        self.assertIn("Ответы работодателей", page)
-        self.assertIn("Ждут ответа", page)
-        self.assertIn("Разрез по баллам", page)
-
-    def test_funnel_page_on_empty_base(self):
-        page = web.render_funnel(self.conn)
-        self.assertIn("воронка откликов", page)
-        self.assertIn("Таких откликов нет", page)
+    def test_funnel_is_gone(self):
+        """Страница и модуль воронки удалены полностью."""
+        self.assertFalse(hasattr(web, "render_funnel"))
+        with self.assertRaises(ImportError):
+            __import__("hhassist.analytics")
 
 
 class SingleVacancyActionTest(WebBase):

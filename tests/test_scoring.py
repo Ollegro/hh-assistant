@@ -54,8 +54,11 @@ class ScoreVacancyTest(unittest.TestCase):
     def test_offline_rules_verdict(self):
         res = scoring.score_vacancy(sample_vacancy(), profile(),
                                     SimpleNamespace(llm_api_key="", llm_base_url="", llm_model=""))
-        self.assertEqual(set(res), {"score", "verdict", "reasons", "model"})
+        self.assertEqual(set(res), {"score", "verdict", "reasons", "model",
+                                    "rule_score", "llm_score"})
         self.assertEqual(res["model"], "rules")
+        self.assertEqual(res["rule_score"], res["score"], "без LLM итог равен правилам")
+        self.assertIsNone(res["llm_score"])
         self.assertGreaterEqual(res["score"], 65)
         self.assertEqual(res["verdict"], "откликаться")
 

@@ -4,6 +4,7 @@ import base64
 import hmac
 import html
 import ipaddress
+import json
 import os
 import ssl
 import threading
@@ -12,7 +13,7 @@ import traceback
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import analytics, areas, jobs, llm, queue, storage
+from . import areas, jobs, llm, queue, storage
 from .config import BASE, get_settings
 
 CSS = """
@@ -34,6 +35,12 @@ tr:last-child td{border-bottom:none}
 tbody tr:hover td{background:rgba(246,240,255,.92)}
 .score{font-weight:700}
 .s-high{color:#0f7a3d}.s-mid{color:#96660a}.s-low{color:#a01a2c}
+.rate{white-space:nowrap}
+.verdict{display:inline-block;margin-top:5px;padding:2px 8px;border-radius:8px;font-size:11px;
+font-weight:600;background:rgba(120,90,170,.12);color:#5d5470}
+.v-yes{background:rgba(15,122,61,.14);color:#0f7a3d}
+.v-mid{background:rgba(150,102,10,.16);color:#96660a}
+.v-no{background:rgba(160,26,44,.14);color:#a01a2c}
 a{color:#6b3fc4;text-decoration:none}a:hover{text-decoration:underline}
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:36px;
 padding:0 14px;border-radius:10px;border:1px solid rgba(120,90,170,.25);
@@ -62,6 +69,16 @@ header .btn{height:32px;padding:0 12px;font-size:12.5px}
 border-radius:14px;padding:16px;margin-bottom:14px;box-shadow:0 10px 28px rgba(84,52,140,.12)}
 .card table{display:table;width:100%}
 .reasons{font-size:12.5px;color:#5d5470}
+.rules-list{margin:6px 0 4px 18px;padding:0;font-size:12.5px;color:#5d5470}
+.rules-list li{margin:3px 0}
+.desc{white-space:pre-line;font-size:13px;line-height:1.55;color:#332b45}
+dialog{max-width:720px;width:calc(100% - 36px);border:none;border-radius:16px;padding:20px 22px;
+color:#2b2438;background:#fdfbff;box-shadow:0 30px 70px rgba(40,20,70,.35)}
+dialog::backdrop{background:rgba(40,20,70,.45)}
+dialog h3{margin:0 0 10px;font-size:17px}
+dialog table{display:table;width:100%;background:transparent;border:none;box-shadow:none}
+dialog th,dialog td{padding:5px 8px;font-size:12.5px;border-bottom:1px solid rgba(120,90,170,.14)}
+dialog .points{white-space:nowrap;font-weight:700;color:#5d5470}
 textarea.queries-text{min-height:140px}
 @media (max-width:760px){main{padding:12px}th,td{padding:7px 9px;font-size:12.5px}
 header{padding:10px 14px;gap:10px}}
@@ -113,6 +130,21 @@ def score_class(score):
     if score >= 50:
         return "s-mid"
     return "s-low"
+
+
+def verdict_badge(verdict):
+    """Цветной бейдж вердикта: единственный ориентир при выборе вакансии."""
+    text = (verdict or "").strip()
+    if not text:
+        return ""
+    low = text.lower()
+    if low.startswith("не ") or "не отклик" in low:
+        cls = "v-no"
+    elif "условно" in low:
+        cls = "v-mid"
+    else:
+        cls = "v-yes"
+    return "<span class='verdict %s'>%s</span>" % (cls, esc(text))
 
 
 def parser_warning(conn, hours=24):
@@ -187,31 +219,18 @@ def _resolve_region(value):
     return (str(found) if found else "", text)
 
 
-def _city_options(conn, region):
-    """Города: при выбранном регионе — только его, иначе все из базы."""
-    pairs = [("", "все города")]
-    for row in storage.area_counts(conn, region or None):
-        value = row["area"] or ""
-        if value:
-            pairs.append((value, "%s (%d)" % (value, row["cnt"])))
-    return pairs
-
-
-def render_index(conn, threshold, limit, msg="", area="", region=""):
+def render_index(conn, limit, msg="", region=""):
     region_value, region_name = _resolve_region(region)
-    rows = queue.next_batch(conn, threshold=threshold, limit=limit,
-                            region=region_name, area=area)
+    rows = queue.next_batch(conn, limit=limit, region=region_name)
     st = storage.stats(conn)
     left = queue.can_send_today(conn, get_settings().daily_limit)
     # Один селект региона на всю страницу: он же задаёт регион сбора (POST /run/collect)
     # и фильтр списка. Кнопки действий — в той же форме через formaction, поэтому
-    # высота и отступы у селектов и кнопок одинаковые.
+    # высота и отступы у селекта и кнопок одинаковые.
     toolbar = (
         "<form method='get' action='/' class='toolbar'>"
         "<select name='region' title='регион: сбор и фильтр списка'"
-        " onchange='this.form.city.value=\"\";this.form.submit()'>%s</select>"
-        "<select name='city' title='город' onchange='this.form.submit()'>%s</select>"
-        "<select name='threshold' title='порог оценки' onchange='this.form.submit()'>%s</select>"
+        " onchange='this.form.submit()'>%s</select>"
         "<span class='buttons'>"
         "<button class='btn primary' type='submit' formaction='/run/collect'"
         " formmethod='post'>Собрать вакансии</button>"
@@ -221,11 +240,7 @@ def render_index(conn, threshold, limit, msg="", area="", region=""):
         " formmethod='post'>Сгенерировать письма</button>"
         "<a class='btn' href='/export'>Экспорт писем в файлы</a>"
         "</span>"
-        "</form>" % (
-            _options(_region_options(conn), region_value),
-            _options(_city_options(conn, region_name), area),
-            _options([(0, "порог: показать все"), (40, "порог: 40"),
-                      (55, "порог: 55"), (70, "порог: 70")], threshold))
+        "</form>" % _options(_region_options(conn), region_value)
     )
     parts = [
         "<html><head><meta charset='utf-8'>"
@@ -247,107 +262,28 @@ def render_index(conn, threshold, limit, msg="", area="", region=""):
     warning = parser_warning(conn)
     if warning:
         parts.append("<div class='card'>%s</div>" % esc(warning))
-    above, scored = storage.score_counts(conn, threshold)
     parts.append(
         "<div class='meta'>собрано в базе: <b>%d</b> · оценено: <b>%d</b> · "
-        "выше порога %d: <b>%d</b> · ниже порога: <b>%d</b> · без оценки: <b>%d</b> · "
-        "в списке: <b>%d</b></div>" % (
-            st["vacancies"], scored, threshold, above, max(0, scored - above),
-            max(0, st["vacancies"] - scored), len(rows)))
-    parts.append("<table><tr><th>Балл</th><th>Вакансия</th><th>Компания</th><th>Город</th>"
+        "без оценки: <b>%d</b> · в списке: <b>%d</b></div>" % (
+            st["vacancies"], st["scored"], max(0, st["vacancies"] - st["scored"]),
+            len(rows)))
+    parts.append("<table><tr><th>Оценка</th><th>Вакансия</th><th>Компания</th><th>Город</th>"
                  "<th>Формат</th><th>Опыт</th>"
-                 "<th>Зарплата</th><th>Вердикт</th><th></th></tr>")
+                 "<th>Зарплата</th><th></th></tr>")
     for r in rows:
         parts.append(
-            "<tr><td class='score %s'>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td>"
-            "<td>%s</td><td>%s</td><td>%s</td><td><a class='btn' href='/v/%s'>открыть</a></td></tr>" % (
+            "<tr><td class='rate'><span class='score %s'>%s</span>%s</td>"
+            "<td>%s</td><td>%s</td><td>%s</td><td>%s</td>"
+            "<td>%s</td><td>%s</td><td><a class='btn' href='/v/%s'>открыть</a></td></tr>" % (
                 score_class(r["score"]), r["score"] if r["score"] is not None else "—",
-                esc(r["title"]), esc(r["company"]), esc(r["region"] or r["area"]),
+                verdict_badge(r["verdict"]),
+                esc(r["title"]), esc(r["company"]), esc(r["area"] or r["region"]),
                 esc(r["work_format"]), esc(r["experience"]),
-                fmt_salary(r), esc(r["verdict"] or "—"), esc(r["id"])))
+                fmt_salary(r), esc(r["id"])))
     if not rows:
-        parts.append("<tr><td colspan='9'>Ни одной вакансии по фильтру. Соберите вакансии "
-                     "кнопкой выше, затем нажмите «Оценить»; порог можно снизить в фильтре.</td></tr>")
+        parts.append("<tr><td colspan='8'>Ни одной вакансии по фильтру. Соберите вакансии "
+                     "кнопкой выше, затем нажмите «Оценить».</td></tr>")
     parts.append("</table></main></body></html>")
-    return "".join(parts)
-
-
-def _breakdown_table(title, rows):
-    """Таблица разреза аналитики: группа, оценено, отправлено, ответов, доля."""
-    parts = ["<div class='card'><div class='meta'><b>%s</b></div><table>"
-             "<tr><th>Группа</th><th>Оценено</th><th>Отправлено</th><th>Ответов</th>"
-             "<th>Доля ответов</th></tr>" % esc(title)]
-    for r in rows:
-        parts.append("<tr><td>%s</td><td>%d</td><td>%d</td><td>%d</td><td>%.1f%%</td></tr>" % (
-            esc(r["title"]), r["scored"], r["sent"], r["replied"], r["reply_rate"]))
-    if not rows:
-        parts.append("<tr><td colspan='5'>нет данных</td></tr>")
-    parts.append("</table></div>")
-    return "".join(parts)
-
-
-def render_funnel(conn, wait_days=None):
-    """Страница «Воронка»: найдено → оценено → письмо → отправлено → ответ."""
-    settings = get_settings()
-    wait_days = settings.reply_wait_days if wait_days is None else wait_days
-    f = analytics.funnel(conn, wait_days=wait_days)
-    c = analytics.conversions(f)
-    parts = [
-        "<html><head><meta charset='utf-8'><title>Воронка — hh-assistant</title>"
-        "<meta name='viewport' content='width=device-width, initial-scale=1'>"
-        "<style>%s</style></head><body>" % CSS,
-        "<header><b><a href='/'>← к списку</a></b><span>воронка откликов · "
-        "окно ожидания ответа: %d дн.</span></header><main>" % wait_days,
-        "<div class='card'><table><tr><th>Шаг</th><th>Вакансий</th><th>Конверсия</th></tr>",
-    ]
-    for key, title, _base in analytics.STEPS:
-        value = "—" if key == "found" else "%.1f%%" % c.get(key, 0.0)
-        parts.append("<tr><td>%s</td><td class='score'>%d</td><td>%s</td></tr>" % (
-            esc(title), f[key], value))
-    parts.append("</table></div>")
-
-    parts.append("<div class='card'><div class='meta'><b>Детали</b></div><table>")
-    for title, value in (("готово к отправке", f["ready"]),
-                         ("пропущено", f["skipped"]),
-                         ("без ответа > %d дн." % wait_days, f["no_answer"]),
-                         ("приглашения", f["invited"]),
-                         ("отказы", f["rejected"])):
-        parts.append("<tr><td>%s</td><td class='score'>%d</td></tr>" % (esc(title), value))
-    parts.append("</table></div>")
-
-    parts.append(_breakdown_table("Разрез по баллам", analytics.by_score_band(conn)))
-    parts.append(_breakdown_table("Форматы работы", analytics.by_format(conn)))
-    parts.append(_breakdown_table("Компании (топ-10)", analytics.by_company(conn)))
-
-    rows = queue.responded(conn)
-    parts.append("<div class='card'><div class='meta'><b>Ответы работодателей: %d</b></div>"
-                 "<table><tr><th>Статус</th><th>Вакансия</th><th>Компания</th><th>Балл</th>"
-                 "<th>Когда</th><th></th></tr>" % len(rows))
-    for r in rows:
-        parts.append("<tr><td>%s</td><td>%s</td><td>%s</td><td class='score %s'>%s</td>"
-                     "<td>%s</td><td><a class='btn' href='/v/%s'>открыть</a></td></tr>" % (
-                         esc(r["status"]), esc(r["title"]), esc(r["company"]),
-                         score_class(r["score"]),
-                         r["score"] if r["score"] is not None else "—",
-                         esc((r["sent_at"] or "")[:10]), esc(r["id"])))
-    if not rows:
-        parts.append("<tr><td colspan='6'>Ответов пока нет: отметьте в карточке «Ответили», "
-                     "«Приглашение» или «Отказ».</td></tr>")
-    parts.append("</table></div>")
-
-    waiting = analytics.awaiting_reply(conn, wait_days=wait_days)
-    parts.append("<div class='card'><div class='meta'><b>Ждут ответа > %d дн.: %d</b></div>"
-                 "<table><tr><th>Отправлено</th><th>Вакансия</th><th>Компания</th><th>Балл</th>"
-                 "<th></th></tr>" % (wait_days, len(waiting)))
-    for r in waiting:
-        parts.append("<tr><td>%s</td><td>%s</td><td>%s</td><td class='score %s'>%s</td>"
-                     "<td><a class='btn' href='/v/%s'>открыть</a></td></tr>" % (
-                         esc(r["sent_date"]), esc(r["title"]), esc(r["company"]),
-                         score_class(r["score"]),
-                         r["score"] if r["score"] is not None else "—", esc(r["id"])))
-    if not waiting:
-        parts.append("<tr><td colspan='5'>Таких откликов нет.</td></tr>")
-    parts.append("</table></div></main></body></html>")
     return "".join(parts)
 
 
@@ -585,7 +521,75 @@ def _run_action(kind, conn, limit=None, area=None, vacancy_id="", on_item=None):
     return "неизвестное действие: %s" % kind
 
 
-def render_card(conn, vacancy_id, msg=""):
+def score_parts(raw):
+    """JSON-причины оценки -> (список причин, «фокус» — что подчеркнуть в письме).
+
+    Раньше карточка печатала сырой JSON-массив; теперь это список. Битые или
+    старые данные не ломают страницу — показываются одной строкой.
+    """
+    if not raw:
+        return [], ""
+    try:
+        items = json.loads(raw)
+    except (TypeError, ValueError):
+        return [str(raw)], ""
+    if isinstance(items, str):
+        items = [items]
+    if not isinstance(items, list):
+        return [str(items)], ""
+    reasons, focus = [], ""
+    for item in items:
+        text = str(item).strip()
+        if not text:
+            continue
+        if text.lower().startswith("фокус"):
+            focus = text.partition(":")[2].strip() or text
+        else:
+            reasons.append(text)
+    return reasons, focus
+
+
+def rules_dialog(row, show_rules=False):
+    """Окно «Как считается оценка»: правила с весами и результат этой вакансии.
+
+    Открывается кнопкой «Правила оценки» и автоматически после нажатия
+    «Переоценить вакансию» (флаг show_rules → data-open='1').
+    """
+    from . import scoring
+
+    rules = "".join(
+        "<tr><td>%s</td><td class='points'>%s</td><td>%s</td></tr>" % (
+            esc(title), esc(points), esc(note))
+        for title, points, note in scoring.RULE_WEIGHTS)
+    parts = []
+    if row["rule_score"] is not None:
+        parts.append("правила: <b>%d</b>" % row["rule_score"])
+    if row["llm_score"] is not None:
+        parts.append("LLM: <b>%d</b>" % row["llm_score"])
+    shares = " · ".join(parts) or "составляющие не сохранены (оценка сделана раньше)"
+    reasons, focus = score_parts(row["reasons"])
+    items = "".join("<li>%s</li>" % esc(item) for item in reasons)
+    items = ("<ul class='rules-list'>%s</ul>" % items) if items else "<div class='meta'>причин нет</div>"
+    focus_block = ("<div class='meta'><b>Что подчеркнуть в письме:</b> %s</div>" % esc(focus)) \
+        if focus else ""
+    return (
+        "<dialog id='rules' data-open='%d'>"
+        "<h3>Как считается оценка вакансии</h3>"
+        "<div class='meta'>Итоговый балл = %d%% правила + %d%% оценка LLM. "
+        "Ориентир при выборе — сам балл и вердикт.</div>"
+        "<table><tr><th>Правило</th><th>Баллы</th><th>Когда срабатывает</th></tr>%s</table>"
+        "<div class='meta'>Результат этой вакансии: %s · итог <b>%s</b> · вердикт <b>%s</b></div>"
+        "%s%s"
+        "<div class='actions'><form method='dialog'>"
+        "<button class='btn primary' type='submit'>Понятно</button></form></div>"
+        "</dialog>" % (
+            1 if show_rules else 0, int(scoring.RULE_WEIGHT * 100),
+            int(scoring.LLM_WEIGHT * 100), rules, shares,
+            row["score"] if row["score"] is not None else "—",
+            esc(row["verdict"] or "нет"), items, focus_block))
+
+
+def render_card(conn, vacancy_id, msg="", show_rules=False):
     row = storage.vacancy_with_letter(conn, vacancy_id)
     if not row:
         return None
@@ -596,7 +600,12 @@ def render_card(conn, vacancy_id, msg=""):
         note = "текст сгенерирован"
     else:
         note = "письма пока нет — нажмите «Сгенерировать письмо»"
-    reasons = row["reasons"] or ""
+    reasons, focus_text = score_parts(row["reasons"])
+    if reasons:
+        reasons_html = "<ul class='rules-list'>%s</ul>" % "".join(
+            "<li>%s</li>" % esc(item) for item in reasons)
+    else:
+        reasons_html = "<div class='reasons'>причин нет — нажмите «Переоценить вакансию»</div>"
     from . import matching
     match_line = matching.explain(dict(row), get_settings().profile) or "нет данных"
     last = storage.latest_application(conn, vacancy_id)
@@ -617,19 +626,26 @@ def render_card(conn, vacancy_id, msg=""):
         ("<div class='card'>%s</div>" % esc(msg)) if msg else "",
         ("<div class='meta'>%s</div>" % esc(run_progress())) if run_progress() else "",
         "<div class='card'><div class='meta'><b>%s</b> · %s · опыт: %s · зарплата: %s · "
-        "<span class='score %s'>балл %s</span></div>"
-        "<div class='reasons'>%s</div></div>" % (
+        "<span class='score %s'>оценка %s</span> %s</div>"
+        "<div class='meta'>Почему такой балл:</div>%s%s"
+        "<div class='actions'>"
+        "<button class='btn' type='button' onclick=\"document.getElementById('rules').showModal()\">"
+        "Правила оценки</button></div></div>" % (
             esc(row["title"]), esc(row["work_format"] or "формат не указан"),
             esc(row["experience"] or "—"),
-            fmt_salary(row), score_class(row["score"]), row["score"] if row["score"] is not None else "—",
-            esc(reasons)),
+            fmt_salary(row), score_class(row["score"]),
+            row["score"] if row["score"] is not None else "—",
+            verdict_badge(row["verdict"]), reasons_html,
+            ("<div class='meta'><b>Что подчеркнуть в письме:</b> %s</div>" % esc(focus_text))
+            if focus_text else ""),
         "<div class='card'><div class='reasons'><b>Сопоставление с профилем:</b> %s</div></div>" % esc(match_line),
         "<div class='card'><div class='meta'><b>Письмо и оценка</b> — действия только для этой вакансии</div>"
         "<div class='actions'>"
         "<form method='post' action='/run/letters/%s' style='display:inline'>"
         "<button class='btn primary' type='submit'>Сгенерировать письмо</button></form>"
         "<form method='post' action='/run/score/%s' style='display:inline'>"
-        "<button class='btn' type='submit'>Оценить вакансию</button></form>"
+        "<button class='btn' type='submit' title='пересчитать балл этой вакансии "
+        "(правила + LLM) и показать правила оценки'>Переоценить вакансию</button></form>"
         "</div></div>" % (esc(row["id"]), esc(row["id"])),
         "<div class='card'><div class='reasons'><b>Статус отклика:</b> %s</div>"
         "<div class='actions'>"
@@ -657,7 +673,12 @@ def render_card(conn, vacancy_id, msg=""):
         "<textarea id='letter' name='text'>%s</textarea>"
         "<div class='actions'><button class='btn primary' type='submit'>Сохранить письмо</button>"
         "<span class='meta'>%s</span></div></form>" % (esc(row["id"]), esc(letter), esc(note)),
-        "<div class='card' style='margin-top:14px'><div class='meta'><b>Описание вакансии</b></div>%s</div>" % esc(row["description"]),
+        "<div class='card' style='margin-top:14px'><div class='meta'><b>Описание вакансии</b>"
+        " · <a href='%s' target='_blank' rel='noopener'>полный текст на hh</a></div>"
+        "<div class='desc'>%s</div></div>" % (esc(row["url"]), esc(row["description"])),
+        rules_dialog(row, show_rules),
+        "<script>var box=document.getElementById('rules');"
+        "if(box&&box.getAttribute('data-open')==='1'){try{box.showModal();}catch(e){}}</script>",
         "</main></body></html>",
     ]
     return "".join(parts)
@@ -846,20 +867,14 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/":
                 qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-                threshold = int(qs.get("threshold", [get_settings().score_threshold])[0])
                 msg = qs.get("msg", [""])[0]
-                area = qs.get("city", qs.get("area", [""]))[0]
                 region = qs.get("region", [""])[0]
-                self._send(render_index(conn, threshold, limit=50, msg=msg, area=area,
-                                        region=region))
-            elif path == "/funnel":
-                qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-                days = qs.get("days", [None])[0]
-                self._send(render_funnel(conn, wait_days=int(days) if days else None))
+                self._send(render_index(conn, limit=50, msg=msg, region=region))
             elif path.startswith("/v/"):
                 qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
                 msg = qs.get("msg", [""])[0]
-                page = render_card(conn, path.split("/")[2], msg=msg)
+                show_rules = qs.get("rated", [""])[0] not in ("", "0")
+                page = render_card(conn, path.split("/")[2], msg=msg, show_rules=show_rules)
                 self._send(page if page else "не найдено", status=200 if page else 404)
             elif path.startswith("/letter/"):
                 row = storage.vacancy_with_letter(conn, path.split("/")[2])
@@ -935,7 +950,8 @@ class Handler(BaseHTTPRequestHandler):
                     # пакетная работа (сбор, оценка всех, письма) — в фоне
                     report = start_action(kind, area=area_id)
                 back = "/v/%s" % urllib.parse.quote(target) if target else "/"
-                self._redirect(back + "?msg=" + urllib.parse.quote(report))
+                extra = "&rated=1" if target and kind == "score" else ""
+                self._redirect(back + "?msg=" + urllib.parse.quote(report) + extra)
             else:
                 self._send("not found", status=404)
         finally:

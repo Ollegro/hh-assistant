@@ -95,7 +95,6 @@ class Settings:
     user_agent: str = "hh-assistant/0.1 (o.gutsev@mail.ru)"
     daily_limit: int = 200
     delay_seconds: int = 0
-    score_threshold: int = 55
     reply_wait_days: int = 14
     collect_limit: int = 20
     collect_pages: int = 1
@@ -157,7 +156,6 @@ def get_settings():
         user_agent=env.get("HH_USER_AGENT", Settings.user_agent),
         daily_limit=int(env.get("DAILY_LIMIT", 200)),
         delay_seconds=int(env.get("DELAY_SECONDS", 0)),
-        score_threshold=int(env.get("SCORE_THRESHOLD", 55)),
         reply_wait_days=int(env.get("REPLY_WAIT_DAYS", 14)),
         collect_limit=int(env.get("COLLECT_LIMIT", 20)),
         collect_pages=int(env.get("COLLECT_PAGES", 1)),

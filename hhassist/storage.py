@@ -94,7 +94,9 @@ CREATE TABLE IF NOT EXISTS scores (
     score INTEGER,
     verdict TEXT,
     reasons TEXT,
-    updated_at TEXT
+    updated_at TEXT,
+    rule_score INTEGER,
+    llm_score INTEGER
 );
 CREATE TABLE IF NOT EXISTS letters (
     vacancy_id TEXT PRIMARY KEY,
@@ -150,6 +152,7 @@ MIGRATIONS = {
     "vacancies": (("area", "TEXT DEFAULT ''"), ("area_id", "TEXT DEFAULT ''"),
                   ("region", "TEXT DEFAULT ''"), ("seen_at", "TEXT")),
     "letters": (("edited", "INTEGER DEFAULT 0"), ("edited_at", "TEXT")),
+    "scores": (("rule_score", "INTEGER"), ("llm_score", "INTEGER")),
 }
 
 
@@ -222,14 +225,19 @@ def upsert_vacancy(conn, v, commit=True):
         conn.commit()
 
 
-def save_score(conn, vacancy_id, score, verdict, reasons, commit=True):
+def save_score(conn, vacancy_id, score, verdict, reasons, commit=True,
+               rule_score=None, llm_score=None):
+    """Пишет оценку. rule_score/llm_score — составляющие для окна «как считается»."""
     conn.execute(
-        """INSERT INTO scores (vacancy_id, score, verdict, reasons, updated_at)
-           VALUES (?, ?, ?, ?, ?)
+        """INSERT INTO scores (vacancy_id, score, verdict, reasons, updated_at,
+                               rule_score, llm_score)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(vacancy_id) DO UPDATE SET
                score=excluded.score, verdict=excluded.verdict,
-               reasons=excluded.reasons, updated_at=excluded.updated_at""",
-        (vacancy_id, int(score), verdict, json.dumps(reasons, ensure_ascii=False), now()),
+               reasons=excluded.reasons, updated_at=excluded.updated_at,
+               rule_score=excluded.rule_score, llm_score=excluded.llm_score""",
+        (vacancy_id, int(score), verdict, json.dumps(reasons, ensure_ascii=False), now(),
+         rule_score, llm_score),
     )
     if commit:
         conn.commit()
@@ -330,7 +338,8 @@ def pending_vacancies(conn, min_score=None, limit=50):
 
 def vacancy_with_letter(conn, vacancy_id):
     return conn.execute(
-        """SELECT v.*, s.score, s.verdict, s.reasons, l.text AS letter,
+        """SELECT v.*, s.score, s.verdict, s.reasons, s.rule_score, s.llm_score,
+                  l.text AS letter,
                   COALESCE(l.edited, 0) AS letter_edited, l.edited_at AS letter_edited_at
            FROM vacancies v
            LEFT JOIN scores s ON s.vacancy_id = v.id
@@ -367,34 +376,12 @@ def last_event(conn, kind):
     return {"ts": row["ts"], "payload": payload}
 
 
-def score_counts(conn, threshold):
-    """(оценено не ниже порога, оценено всего) — для сводки на главной странице."""
-    row = conn.execute(
-        """SELECT COALESCE(SUM(CASE WHEN score >= ? THEN 1 ELSE 0 END), 0) AS above,
-                  COUNT(*) AS scored FROM scores""", (threshold,)).fetchone()
-    return row["above"], row["scored"]
-
-
 def region_counts(conn):
     """[(субъект РФ, сколько вакансий)] — верхний уровень фильтра на главной."""
     return conn.execute(
         """SELECT COALESCE(region, '') AS region, COUNT(*) AS cnt FROM vacancies
            GROUP BY COALESCE(region, '') ORDER BY cnt DESC, region"""
     ).fetchall()
-
-
-def area_counts(conn, region=None):
-    """[(город, сколько вакансий)] — нижний уровень фильтра.
-
-    region=None — по всем вакансиям, иначе только по выбранному субъекту РФ.
-    """
-    sql = "SELECT COALESCE(area, '') AS area, COUNT(*) AS cnt FROM vacancies"
-    params = ()
-    if region is not None:
-        sql += " WHERE COALESCE(region, '') = ?"
-        params = (region,)
-    sql += " GROUP BY COALESCE(area, '') ORDER BY cnt DESC, area"
-    return conn.execute(sql, params).fetchall()
 
 
 def sent_companies_since(conn, cutoff):

@@ -90,7 +90,8 @@ def score_pending(conn, settings, force=False, on_item=None):
         v = vacancy_dict(row)
         res = scoring.score_vacancy(v, settings.profile, settings)
         storage.save_score(conn, v["id"], res["score"], res["verdict"], res["reasons"],
-                           commit=False)
+                           commit=False, rule_score=res.get("rule_score"),
+                           llm_score=res.get("llm_score"))
         done += 1
         _commit_progress(conn, done)
         if on_item:
@@ -100,24 +101,26 @@ def score_pending(conn, settings, force=False, on_item=None):
     return done, total
 
 
-def letter_vacancies(conn, threshold, limit=50, force=False):
-    """Вакансии выше порога, для которых ещё нет письма (force=True — все).
+def letter_vacancies(conn, limit=50, force=False):
+    """Вакансии, для которых ещё нет письма (force=True — все), по убыванию балла.
 
-    Письма, правленные человеком (letters.edited=1), не перегенерируются никогда,
-    а компании, куда откликались меньше COMPANY_COOLDOWN_DAYS дней назад, пропускаются.
+    Порога оценки нет: письма делаются для всех вакансий из списка по порядку
+    балла. Письма, правленные человеком (letters.edited=1), не перегенерируются
+    никогда, а компании, куда откликались меньше COMPANY_COOLDOWN_DAYS дней назад,
+    пропускаются.
     """
     from . import queue
 
     sql = """SELECT v.* FROM vacancies v
              LEFT JOIN scores sc ON sc.vacancy_id = v.id
              LEFT JOIN letters l ON l.vacancy_id = v.id
-             WHERE COALESCE(sc.score, 0) >= ? AND COALESCE(l.edited, 0) = 0"""
+             WHERE COALESCE(l.edited, 0) = 0"""
     if not force:
         sql += " AND l.text IS NULL"
     sql += " ORDER BY COALESCE(sc.score, 0) DESC, v.created_at DESC LIMIT ?"
     cooled = queue.cooldown_companies(conn)
     # с запасом по строке: часть вакансий отсеет кулдаун компаний
-    rows = conn.execute(sql, (threshold, limit * 2 if cooled else limit)).fetchall()
+    rows = conn.execute(sql, (limit * 2 if cooled else limit,)).fetchall()
     if cooled:
         rows = [r for r in rows
                 if matching.normalize(r["company"]) not in cooled]
@@ -131,7 +134,8 @@ def score_one(conn, settings, vacancy_id):
         return None
     v = vacancy_dict(row)
     res = scoring.score_vacancy(v, settings.profile, settings)
-    storage.save_score(conn, v["id"], res["score"], res["verdict"], res["reasons"])
+    storage.save_score(conn, v["id"], res["score"], res["verdict"], res["reasons"],
+                       rule_score=res.get("rule_score"), llm_score=res.get("llm_score"))
     return res["score"], res["verdict"]
 
 
@@ -156,11 +160,10 @@ def make_letter_for(conn, settings, vacancy_id):
     return text, model, False
 
 
-def make_letters(conn, settings, threshold=None, limit=50, force=False, on_item=None):
+def make_letters(conn, settings, limit=50, force=False, on_item=None):
     """Генерирует письма пачкой. Возвращает количество созданных."""
-    threshold = settings.score_threshold if threshold is None else threshold
     made = 0
-    for row in letter_vacancies(conn, threshold, limit=limit, force=force):
+    for row in letter_vacancies(conn, limit=limit, force=force):
         v = vacancy_dict(row)
         text, model = letters_mod.make_letter(v, settings.profile, settings)
         storage.save_letter(conn, v["id"], text, model, commit=False)
@@ -172,12 +175,12 @@ def make_letters(conn, settings, threshold=None, limit=50, force=False, on_item=
     return made
 
 
-def export_letters(conn, out_dir, threshold=0, limit=1000):
+def export_letters(conn, out_dir, limit=1000):
     """Пишет все готовые письма в .txt. Возвращает количество файлов."""
     from . import queue
 
     made = 0
-    for row in queue.next_batch(conn, threshold=threshold, limit=limit):
+    for row in queue.next_batch(conn, limit=limit):
         if row["letter"] and queue.export_letter(conn, row["id"], out_dir):
             made += 1
     return made

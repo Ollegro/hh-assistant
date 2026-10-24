@@ -3,7 +3,34 @@
 from . import llm, matching
 from .config import get_settings
 
+BASE_SCORE = 50
 STOP_PENALTY = 35
+SALARY_BELOW = 30
+SALARY_IN_RANGE = 10
+FORMAT_BONUS = 8
+FORMAT_PENALTY = 10
+EXPERIENCE_BONUS = 6
+EXPERIENCE_PENALTY = 12
+HARD_STOP_BELOW = 30
+
+# Описание правил для окна «Как считается оценка» в интерфейсе.
+# Формируется из тех же констант, что и сам расчёт: подпись не разойдётся с кодом.
+RULE_WEIGHTS = (
+    ("Стартовый балл", "+%d" % BASE_SCORE, "с этого начинает любая вакансия"),
+    ("Стоп-слово профиля", "−%d" % STOP_PENALTY, "«стажёр», «продажи» и т.п. — за каждое"),
+    ("Роль в заголовке", "по профилю", "совпадение с целевой ролью (промпт/AI-инженер)"),
+    ("Стек технологий", "по профилю", "ключевые и дополнительные технологии из резюме"),
+    ("Уровень (junior/lead)", "по профилю", "ниже или выше целевого — минус"),
+    ("Зарплата ниже ожиданий", "−%d" % SALARY_BELOW, "верхняя граница вилки ниже желаемой"),
+    ("Зарплата в вилке", "+%d" % SALARY_IN_RANGE, "нижняя граница не ниже желаемой"),
+    ("Зарплата не указана", "0", "балл не меняется, причина остаётся в списке"),
+    ("Формат работы подходит", "+%d" % FORMAT_BONUS, "удалёнка/гибрид из профиля"),
+    ("Формат вне предпочтений", "−%d" % FORMAT_PENALTY, "офис и прочее"),
+    ("Опыт 1–3 года", "+%d" % EXPERIENCE_BONUS, "целевой уровень"),
+    ("Требуется опыт 6+ лет", "−%d" % EXPERIENCE_PENALTY, "слишком высокий грейд"),
+    ("Компания в стоп-листе", "0 и стоп", "вакансия не рассматривается вовсе"),
+    ("Итог ниже %d" % HARD_STOP_BELOW, "стоп", "вердикт «не откликаться»"),
+)
 
 
 def _text(v):
@@ -16,7 +43,7 @@ def _text(v):
 
 def rule_score(v, profile):
     """Оценка по формальным правилам. Возвращает (score, reasons, hard_stop)."""
-    score = 50
+    score = BASE_SCORE
     reasons = []
     hard_stop = False
     text = _text(v)
@@ -40,10 +67,10 @@ def rule_score(v, profile):
     if v.get("currency") == "RUR" and (sf or st):
         top = st or sf
         if top and top < want_from:
-            score -= 30
+            score -= SALARY_BELOW
             reasons.append("зарплата ниже ожиданий (%s)" % top)
         elif sf and sf >= want_from:
-            score += 10
+            score += SALARY_IN_RANGE
             reasons.append("зарплата в вилке")
     else:
         reasons.append("зарплата не указана")
@@ -53,19 +80,19 @@ def rule_score(v, profile):
     wanted = [f.lower() for f in profile.get("formats", [])]
     if fmt:
         if any(w in fmt for w in wanted):
-            score += 8
+            score += FORMAT_BONUS
             reasons.append("формат: %s" % fmt)
         else:
-            score -= 10
+            score -= FORMAT_PENALTY
             reasons.append("формат вне предпочтений: %s" % fmt)
 
     # опыт
     exp = (v.get("experience") or "").lower()
     if "более 6" in exp:
-        score -= 12
+        score -= EXPERIENCE_PENALTY
         reasons.append("требуется опыт 6+ лет")
     elif "1–3" in exp or "1-3" in exp:
-        score += 6
+        score += EXPERIENCE_BONUS
         reasons.append("опыт 1–3 года")
 
     # стоп-лист компаний из профиля: вакансия не рассматривается вовсе
@@ -75,7 +102,7 @@ def rule_score(v, profile):
         reasons.append("компания в стоп-листе профиля")
 
     score = max(0, min(100, score))
-    if score < 30:
+    if score < HARD_STOP_BELOW:
         hard_stop = True
     return score, reasons, hard_stop
 
@@ -142,11 +169,17 @@ def llm_score(v, profile, settings=None):
 
 
 def score_vacancy(v, profile, settings=None):
-    """Итоговая оценка: правила + LLM (если доступен)."""
+    """Итоговая оценка: правила + LLM (если доступен).
+
+    Возвращает балл правил и балл LLM отдельно (`rule_score`, `llm_score`) —
+    их показывает окно «Как считается оценка» в карточке.
+    """
     r_score, r_reasons, hard_stop = rule_score(v, profile)
     llm = llm_score(v, profile, settings)
+    model_score = None
     if llm and llm.get("score") is not None:
-        final = combine_scores(r_score, llm["score"])
+        model_score = llm["score"]
+        final = combine_scores(r_score, model_score)
         verdict = llm.get("verdict") or ("откликаться" if final >= 60 else "условно")
         reasons = r_reasons + llm.get("reasons", [])
         model = llm.get("model", "")
@@ -155,4 +188,5 @@ def score_vacancy(v, profile, settings=None):
         verdict = "не откликаться" if hard_stop else ("откликаться" if final >= 65 else "условно")
         reasons = r_reasons + (llm.get("reasons", []) if llm else [])
         model = "rules"
-    return {"score": final, "verdict": verdict, "reasons": reasons, "model": model}
+    return {"score": final, "verdict": verdict, "reasons": reasons, "model": model,
+            "rule_score": r_score, "llm_score": model_score}

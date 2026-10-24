@@ -30,7 +30,7 @@ CREATE TABLE letters (
 
 
 def settings(**over):
-    data = {"profile": dict(DEFAULT_PROFILE), "score_threshold": 55,
+    data = {"profile": dict(DEFAULT_PROFILE),
             "collect_limit": 20, "collect_pages": 1, "collect_queries": 0}
     data.update(over)
     return Settings(**data)
@@ -140,22 +140,21 @@ class CooldownTest(Base):
         self.scored("1", company="Ромашка")
         self.scored("2", company="Ромашка")
         queue.mark_sent(self.conn, "1")
-        ids = [r["id"] for r in queue.next_batch(self.conn, threshold=55, limit=10)]
+        ids = [r["id"] for r in queue.next_batch(self.conn, limit=10)]
         self.assertEqual(ids, [])
 
     def test_other_companies_stay(self):
         self.scored("1", company="Ромашка")
         self.scored("2", company="Лютик")
         queue.mark_sent(self.conn, "1")
-        ids = [r["id"] for r in queue.next_batch(self.conn, threshold=55, limit=10)]
+        ids = [r["id"] for r in queue.next_batch(self.conn, limit=10)]
         self.assertEqual(ids, ["2"])
 
     def test_zero_days_disables_rule(self):
         self.scored("1", company="Ромашка")
         self.scored("2", company="Ромашка")
         queue.mark_sent(self.conn, "1")
-        ids = [r["id"] for r in queue.next_batch(self.conn, threshold=55, limit=10,
-                                                 cooldown_days=0)]
+        ids = [r["id"] for r in queue.next_batch(self.conn, limit=10, cooldown_days=0)]
         self.assertEqual(ids, ["2"])
 
     def test_cooldown_lists_company(self):
@@ -167,7 +166,7 @@ class CooldownTest(Base):
         self.scored("1", company="Ромашка")
         self.scored("2", company="Лютик")
         queue.mark_sent(self.conn, "1")
-        rows = jobs.letter_vacancies(self.conn, threshold=55)
+        rows = jobs.letter_vacancies(self.conn)
         self.assertEqual([r["id"] for r in rows], ["2"])
 
 
@@ -243,7 +242,7 @@ class SuspectEventTest(Base):
         self.assertEqual(saved, 3)
         self.assertTrue(any("парсер" in n for n in notes))
         self.assertIsNotNone(storage.last_event(self.conn, "parser_suspect"))
-        self.assertIn("парсер мог сломаться", web.render_index(self.conn, 55, 10))
+        self.assertIn("парсер мог сломаться", web.render_index(self.conn, 10))
 
 
 class RegionTest(Base):
@@ -266,12 +265,14 @@ class RegionTest(Base):
         v = collector.parse_vacancy(html, "1")
         self.assertEqual((v["area"], v["area_id"]), ("Москва", "1"))
 
-    def test_area_saved_and_filtered(self):
-        self.scored("1", area="Москва")
-        self.scored("2", area="Казань")
-        page = web.render_index(self.conn, 55, 10, area="Казань")
-        self.assertIn("Казань", page)
-        self.assertNotIn("href='/v/1'", page)
+    def test_city_is_shown_but_not_filtered(self):
+        """Город виден в таблице, но фильтр теперь только по региону."""
+        self.scored("1", area="Химки", region="Московская область")
+        self.scored("2", area="Мытищи", region="Московская область")
+        page = web.render_index(self.conn, 10, region="Московская область")
+        self.assertIn("Химки", page)
+        self.assertIn("Мытищи", page)
+        self.assertNotIn("name='city'", page)
 
     def test_html_parser_reads_region_from_json_ld(self):
         """Город и субъект РФ берутся из JSON-LD JobPosting (разметка hh 2026)."""
@@ -285,29 +286,30 @@ class RegionTest(Base):
     def test_region_saved_and_filtered(self):
         self.scored("1", area="Химки", region="Московская область")
         self.scored("2", area="Москва", region="Москва")
-        page = web.render_index(self.conn, 55, 10, region="Московская область")
+        page = web.render_index(self.conn, 10, region="Московская область")
         self.assertIn("Химки", page)
         self.assertNotIn("href='/v/2'", page)
 
     def test_old_rows_without_region_match_by_city(self):
         """Вакансии, собранные до появления region, не выпадают из фильтра."""
         self.scored("1", area="Москва")
-        page = web.render_index(self.conn, 55, 10, region="Москва")
+        page = web.render_index(self.conn, 10, region="Москва")
         self.assertIn("href='/v/1'", page)
 
-    def test_threshold_zero_shows_everything(self):
-        """Порог можно снизить в интерфейсе — видно все собранные вакансии."""
+    def test_low_score_still_in_list(self):
+        """Порога нет: вакансия с низким баллом остаётся в списке."""
         self.scored("1", score=10, region="Москва", area="Москва")
-        page = web.render_index(self.conn, 0, 10)
+        page = web.render_index(self.conn, 10)
         self.assertIn("href='/v/1'", page)
 
-    def test_index_shows_where_vacancies_disappeared(self):
-        """Сводка отвечает на «почему в списке 9»: собрано всего и ниже порога."""
+    def test_index_summary_without_threshold(self):
+        """Сводка отвечает на «сколько в списке»: собрано, оценено, без оценки."""
         self.scored("1", score=80)
         self.scored("2", score=10)
-        page = web.render_index(self.conn, 55, 10)
+        page = web.render_index(self.conn, 10)
         self.assertIn("собрано в базе: <b>2</b>", page)
-        self.assertIn("ниже порога: <b>1</b>", page)
+        self.assertIn("без оценки: <b>0</b>", page)
+        self.assertNotIn("ниже порога", page)
 
     def test_area_catalog_without_network(self):
         """Без кэша справочник отдаёт встроенный набор и не ходит в сеть."""

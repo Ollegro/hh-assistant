@@ -22,7 +22,6 @@ def settings(**over):
     """Офлайн-настройки: без ключа LLM скоринг считает только правила."""
     data = {
         "profile": dict(DEFAULT_PROFILE),
-        "score_threshold": 55,
         "collect_limit": 20,
         "collect_pages": 1,
         "collect_queries": 0,
@@ -124,15 +123,23 @@ class CollectQueriesTest(JobsBase):
 
 
 class LettersTest(JobsBase):
-    def test_takes_vacancies_above_threshold(self):
+    def test_takes_every_vacancy_without_letter(self):
+        """Письма делаются для всех вакансий без письма, балл больше не фильтрует."""
         self.save("1", "2", "3")
         storage.save_score(self.conn, "1", 90, "откликаться", [])
         storage.save_score(self.conn, "2", 10, "не откликаться", [])
         storage.save_score(self.conn, "3", 56, "условно", [])
-        self.assertEqual(jobs.make_letters(self.conn, settings()), 2)
+        self.assertEqual(jobs.make_letters(self.conn, settings()), 3)
         ids = sorted(row["vacancy_id"]
                      for row in self.conn.execute("SELECT vacancy_id FROM letters"))
-        self.assertEqual(ids, ["1", "3"])
+        self.assertEqual(ids, ["1", "2", "3"])
+
+    def test_letter_order_follows_score(self):
+        """Порядок — по убыванию балла: первым идёт лучшая вакансия."""
+        self.save("1", "2")
+        storage.save_score(self.conn, "1", 20, "не откликаться", [])
+        storage.save_score(self.conn, "2", 95, "откликаться", [])
+        self.assertEqual([r["id"] for r in jobs.letter_vacancies(self.conn)], ["2", "1"])
 
     def test_skips_existing_letters_without_force(self):
         self.save("1")

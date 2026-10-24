@@ -12,7 +12,7 @@ import os
 import sys
 import time
 
-from hhassist import (analytics, areas, collector, hh_api, jobs, letters, llm, queue, storage,
+from hhassist import (areas, collector, csv_export, hh_api, jobs, letters, llm, queue, storage,
                       web)
 from hhassist.config import BASE, ensure_dirs, get_settings, parse_areas
 
@@ -166,8 +166,7 @@ def cmd_letters(args):
         print("%s | %-9s | %4d знаков | %s | %s" % (
             v["id"], model, len(text), flag, v["title"][:45]))
 
-    made = jobs.make_letters(conn, s, threshold=args.threshold, limit=args.limit,
-                             force=args.force, on_item=show)
+    made = jobs.make_letters(conn, s, limit=args.limit, force=args.force, on_item=show)
     storage.log_event(conn, "letters", {"count": made, "model": s.llm_model or "offline"})
     print("писем создано: %d" % made)
     conn.close()
@@ -185,16 +184,8 @@ def cmd_export(args):
         print("экспортировано писем: %d -> %s" % (made, out_dir))
     if args.csv:
         path = args.csv_path or os.path.join(out_dir, "vacancies.csv")
-        rows = analytics.write_csv(conn, path)
+        rows = csv_export.write_csv(conn, path)
         print("экспортировано строк CSV: %d -> %s" % (rows, path))
-    conn.close()
-
-
-def cmd_funnel(args):
-    """Воронка откликов: найдено → оценено → письмо → отправлено → ответ."""
-    conn = storage.connect()
-    days = args.days if args.days is not None else get_settings().reply_wait_days
-    print(analytics.format_report(conn, wait_days=days))
     conn.close()
 
 
@@ -306,8 +297,7 @@ def main(argv=None):
     p.add_argument("--all", action="store_true", help="переоценить все вакансии")
     p.set_defaults(func=cmd_score)
 
-    p = sub.add_parser("letters", help="сгенерировать письма для вакансий выше порога")
-    p.add_argument("--threshold", type=int, default=None)
+    p = sub.add_parser("letters", help="сгенерировать письма для вакансий без письма")
     p.add_argument("--limit", type=int, default=50)
     p.add_argument("--force", action="store_true", help="перегенерировать существующие письма")
     p.set_defaults(func=cmd_letters)
@@ -322,11 +312,6 @@ def main(argv=None):
     p.add_argument("--csv", action="store_true", help="вместо писем выгрузить таблицу вакансий в CSV")
     p.add_argument("--csv-path", default=None, help="куда сохранить CSV (по умолчанию out/vacancies.csv)")
     p.set_defaults(func=cmd_export)
-
-    p = sub.add_parser("funnel", help="воронка откликов и конверсии")
-    p.add_argument("--days", type=int, default=None,
-                   help="сколько дней ждать ответ, прежде чем считать «молчанием» (REPLY_WAIT_DAYS)")
-    p.set_defaults(func=cmd_funnel)
 
     p = sub.add_parser("mark", help="сменить статус отклика вручную")
     p.add_argument("id", help="id вакансии (см. list)")

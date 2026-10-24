@@ -16,11 +16,12 @@
 | `hhassist/scoring.py` | скоринг 0–100: правила по резюме (роль, стек, уровень, зарплата, формат, опыт, стоп-слова) + LLM (если задан ключ) |
 | `hhassist/letters.py` | генерация письма: LLM (few-shot по вашим письмам) или офлайн-сборка из проверенных блоков |
 | `hhassist/queue.py` | очередь откликов, дедупликация, дневной лимит, смена статусов, экспорт письма в .txt |
-| `hhassist/jobs.py` | пакетные действия (сбор по всем запросам, оценка новых, письма, экспорт) — один код для CLI и веб-интерфейса, одна транзакция на прогон |
-| `hhassist/analytics.py` | воронка (найдено → оценено → письмо → отправлено → ответ), конверсии, разрезы по баллам/форматам/компаниям, CSV-выгрузка |
-| `hhassist/web.py` | локальный веб-интерфейс: список вакансий, оценка, письмо, статусы отклика, страница «Воронка» |
+| `hhassist/jobs.py` | пакетные действия (сбор по всем запросам, оценка новых, письма, экспорт) — один код для CLI и веб-интерфейса, коммит каждые 5 записей |
+| `hhassist/csv_export.py` | выгрузка таблицы вакансий в CSV (`export --csv`): `;`, utf-8-sig, статус отклика в строке |
+| `hhassist/web.py` | локальный веб-интерфейс: список вакансий, оценка, окно правил оценки, письмо, статусы отклика |
 | `hhassist/static/bg.jpg` | фон интерфейса (город по фото заказчика), отдаётся маршрутом `GET /static/<файл>` под тем же входом, что и страницы; пересобрать — `python tools/make_background.py` (облака) или `python tools/make_background.py --from <фото>` (Pillow нужен только для этого, в рантайме не используется) |
-| `cli.py` | команды: `collect` (`--source auto/api/html`), `score`, `letters`, `serve`, `export` (`--csv`), `funnel`, `mark`, `areas`, `stats`, `api-check` |
+| `cli.py` | команды: `collect` (`--source auto/api/html`), `score`, `letters`, `serve`, `export` (`--csv`), `mark`, `letter`, `areas`, `stats`, `api-check` |
+| `tools/refresh_descriptions.py` | перекачка описаний: убирает из старых записей JS-код страницы и возвращает абзацы (`--dry-run`, `--all`, `--limit`, `--pause`) |
 
 ## Как этим пользоваться (два режима)
 
@@ -96,10 +97,10 @@ python tools/run_hh_assistant.py letter 12345 --file my_letter.txt       # за�
 python tools/run_hh_assistant.py api-check   # проверка токена hh и доступа к API
 python tools/run_hh_assistant.py list
 python tools/run_hh_assistant.py score
-python tools/run_hh_assistant.py letters --threshold 55
+python tools/run_hh_assistant.py letters
 python tools/run_hh_assistant.py export       # письма в out/
 python tools/run_hh_assistant.py export --csv # таблица вакансий out/vacancies.csv (Excel: «;», utf-8-sig)
-python tools/run_hh_assistant.py funnel       # воронка откликов и конверсии (--days 30 — окно ожидания)
+python tools/refresh_descriptions.py          # перекачать описания (чистый текст, без JS)
 python tools/run_hh_assistant.py mark 12345 --status приглашение --note "созвон 27.10"
 python tools/run_hh_assistant.py serve        # http://127.0.0.1:8765
 python tools/run_hh_assistant.py reset --yes  # очистить базу и собрать заново
@@ -107,7 +108,7 @@ python tools/run_hh_assistant.py reset --yes  # очистить базу и с�
 
 Русские поисковые запросы удобно держать в `config/queries.txt` (по одному в строке) и передавать через `--query-file`.
 
-### Воронка откликов, статусы и CSV
+### Статусы отклика и CSV
 
 Отклик проходит статусы: `отправлено вручную` → `ответ` → `приглашение` / `отказ`;
 `пропущено` — сознательный отказ от вакансии. Каждая смена статуса — отдельная запись
@@ -115,9 +116,8 @@ python tools/run_hh_assistant.py reset --yes  # очистить базу и с�
 
 - в карточке вакансии: кнопки **Ответили**, **Приглашение**, **Отказ** (и прежние **Отметить отправленным** / **Пропустить**);
 - в консоли: `python cli.py mark <id> --status ответ|приглашение|отказ|sent|skip`;
-- отчёт: `python cli.py funnel` — шаги воронки с конверсиями, «готово к отправке», «пропущено», «без ответа > N дн.», приглашения, отказы;
-- окно ожидания ответа задаётся `REPLY_WAIT_DAYS` в `.env` (по умолчанию 14 дней);
-- в браузере: страница **`/funnel`** — те же цифры плюс разрезы «балл → ответы», «формат работы», «компании», список ответов работодателей и список откликов без ответа.
+- окно ожидания ответа задаётся `REPLY_WAIT_DAYS` в `.env` (по умолчанию 14 дней) и используется
+  в карточке/журнале; отдельной страницы-воронки нет — она удалена 24.10.2026 как лишняя.
 
 Выгрузка таблицы: `python cli.py export --csv` → `out/vacancies.csv` (разделитель `;`,
 кодировка utf-8-sig — открывается в Excel двойным кликом): id, балл, вердикт, вакансия,

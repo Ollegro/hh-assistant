@@ -5,7 +5,7 @@
 id, title, company, url, salary_from, salary_to, currency, work_format,
 experience, published_at, description, skills, source.
 """
-from .collector import clean
+from .collector import html_to_text
 
 EXPERIENCE_MAP = {
     "noExperience": "нет опыта",
@@ -87,13 +87,15 @@ def _skills(item):
 
 def _description(item, limit=4000):
     """Полное описание из /vacancies/{id} либо сниппет из поисковой выдачи."""
-    full = clean(_text(item.get("description")))
+    full = html_to_text(_text(item.get("description")))
     if full:
         return full[:limit]
     snippet = item.get("snippet") or {}
     if isinstance(snippet, dict):
-        parts = [clean(_text(snippet.get("responsibility"))), clean(_text(snippet.get("requirement")))]
-        return " ".join(p for p in parts if p)[:limit]
+        parts = [html_to_text(_text(snippet.get("responsibility"))),
+                 html_to_text(_text(snippet.get("requirement")))]
+        text = "\n".join(p for p in parts if p)
+        return text[:limit]
     return ""
 
 

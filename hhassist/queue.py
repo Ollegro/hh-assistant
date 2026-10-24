@@ -31,13 +31,12 @@ def cooldown_companies(conn, days=None):
     return cooled
 
 
-def next_batch(conn, threshold=55, limit=20, only_new=True, cooldown_days=None,
-               region="", area=""):
-    """Вакансии для работы: оценка не ниже порога и ещё не отмеченные отправленными.
+def next_batch(conn, limit=50, only_new=True, cooldown_days=None, region=""):
+    """Вакансии для работы: всё найденное, по убыванию балла, без порога.
 
-    region — субъект РФ, area — город. Фильтры применяются в SQL, а не после
-    выборки: раньше фильтр по городу резал уже урезанную по порогу пачку, и
-    страница выглядела пустой.
+    Порога оценки больше нет: список показывает вакансии в порядке балла,
+    а ориентир для решения — сам балл и вердикт в колонке «Оценка».
+    region — субъект РФ; фильтр применяется в SQL, а не после выборки.
     """
     cooled = cooldown_companies(conn, cooldown_days)
     sql = """SELECT v.id, v.title, v.company, v.url, v.work_format, v.experience,
@@ -47,8 +46,8 @@ def next_batch(conn, threshold=55, limit=20, only_new=True, cooldown_days=None,
              FROM vacancies v
              LEFT JOIN scores s ON s.vacancy_id = v.id
              LEFT JOIN letters l ON l.vacancy_id = v.id
-             WHERE COALESCE(s.score, 0) >= ?"""
-    params = [threshold]
+             WHERE 1 = 1"""
+    params = []
     if only_new:
         sql += " AND (SELECT COUNT(*) FROM applications a WHERE a.vacancy_id = v.id) = 0"
     if region:
@@ -57,9 +56,6 @@ def next_batch(conn, threshold=55, limit=20, only_new=True, cooldown_days=None,
         sql += (" AND (COALESCE(v.region, '') = ?"
                 " OR (COALESCE(v.region, '') = '' AND COALESCE(v.area, '') = ?))")
         params.extend([region, region])
-    if area:
-        sql += " AND COALESCE(v.area, '') = ?"
-        params.append(area)
     sql += " ORDER BY COALESCE(s.score, 0) DESC, v.created_at DESC LIMIT ?"
     # берём с запасом: часть строк отсеют стоп-лист и кулдаун компаний
     params.append(limit * 3 if cooled else limit)
@@ -125,21 +121,6 @@ def set_status(conn, vacancy_id, kind, note=""):
     storage.log_event(conn, "status", {"vacancy_id": vacancy_id, "kind": code,
                                        "status": status, "note": note})
     return status
-
-
-def responded(conn, limit=50):
-    """Вакансии, где последний статус — ответ работодателя (ответ / приглашение / отказ)."""
-    labels = storage.statuses_for(storage.REPLY_KINDS)
-    sql = """SELECT v.id, v.title, v.company, v.url, s.score,
-                    a.status, a.sent_at, a.note
-             FROM applications a
-             JOIN (SELECT vacancy_id, MAX(id) AS last_id FROM applications
-                   GROUP BY vacancy_id) m ON m.last_id = a.id
-             JOIN vacancies v ON v.id = a.vacancy_id
-             LEFT JOIN scores s ON s.vacancy_id = v.id
-             WHERE a.status IN (%s)
-             ORDER BY a.id DESC LIMIT ?""" % ",".join("?" * len(labels))
-    return conn.execute(sql, labels + (limit,)).fetchall()
 
 
 def mark_sent(conn, vacancy_id, status=None, note=""):

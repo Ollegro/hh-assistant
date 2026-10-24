@@ -25,7 +25,7 @@ from hhassist.config import DEFAULT_PROFILE, Settings  # noqa: E402
 
 def offline_settings(**over):
     """Настройки без ключа LLM: скоринг считает только правила."""
-    data = {"profile": dict(DEFAULT_PROFILE), "daily_limit": 200, "score_threshold": 55,
+    data = {"profile": dict(DEFAULT_PROFILE), "daily_limit": 200,
             "collect_limit": 20, "collect_pages": 1, "collect_queries": 0}
     data.update(over)
     return Settings(**data)
@@ -61,14 +61,14 @@ class SingleRegionSelectTest(Base):
     """Один селект региона на страницу: он же задаёт и сбор, и фильтр."""
 
     def page(self, **kwargs):
-        return web.render_index(self.conn, kwargs.pop("threshold", 55),
-                                kwargs.pop("limit", 10), **kwargs)
+        return web.render_index(self.conn, kwargs.pop("limit", 10), **kwargs)
 
     def test_only_one_region_select(self):
         page = self.page()
         self.assertEqual(page.count("name='region'"), 1)
         self.assertNotIn("name='area'", page)          # второго выбора региона нет
-        self.assertIn("name='city'", page)             # город остался отдельным фильтром
+        self.assertNotIn("name='city'", page)          # фильтра по городам нет
+        self.assertNotIn("name='threshold'", page)     # порога оценки нет
 
     def test_region_options_carry_hh_ids(self):
         page = self.page()
@@ -94,12 +94,13 @@ class SingleRegionSelectTest(Base):
         self.assertIn("href='/v/1'", page)
         self.assertIn("href='/v/2'", page)
 
-    def test_city_filter_still_works(self):
-        self.scored("1", area="Химки", region="Московская область")
-        self.scored("2", area="Мытищи", region="Московская область")
-        page = self.page(region="2019", area="Химки")
+    def test_no_threshold_filter_any_more(self):
+        """Порога нет: в списке обе вакансии, даже с низким баллом."""
+        self.scored("1", score=90, area="Химки", region="Московская область")
+        self.scored("2", score=10, area="Мытищи", region="Московская область")
+        page = self.page(region="2019")
         self.assertIn("href='/v/1'", page)
-        self.assertNotIn("href='/v/2'", page)
+        self.assertIn("href='/v/2'", page)
 
 
 class ResolveRegionTest(unittest.TestCase):
@@ -125,7 +126,7 @@ class ToolbarTest(Base):
     """Кнопки действий — в одной панели с селектами, одинаковой высоты."""
 
     def test_actions_live_in_single_toolbar(self):
-        page = web.render_index(self.conn, 55, 10)
+        page = web.render_index(self.conn, 10)
         self.assertIn("class='toolbar'", page)
         self.assertLess(page.index("class='toolbar'"), page.index("Собрать вакансии"))
         for label in ("Собрать вакансии", "Оценить", "Сгенерировать письма",
@@ -176,8 +177,7 @@ class CollectFromToolbarTest(Base):
 
         with mock.patch.object(web, "_queries", lambda: ["AI инженер"]), \
                 mock.patch.object(collector, "collect", fake_collect):
-            status, page = self.post("/run/collect", {"region": "1", "city": "",
-                                                      "threshold": "55"})
+            status, page = self.post("/run/collect", {"region": "1"})
         self.assertEqual(status, 200)
         self.assertIn("запущено: сбор вакансий", page)
         self.assertTrue(web.wait_run(30), "фоновый сбор не завершился")
