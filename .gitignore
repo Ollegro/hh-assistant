@@ -1,5 +1,7 @@
 # Личные данные и результаты работы — не публикуются
 config/profile.json
+config/tls.crt
+config/tls.key
 .env
 data/
 out/
