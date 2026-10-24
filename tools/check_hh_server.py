@@ -35,6 +35,17 @@ try:
         except Exception as e:
             lines.append("%-10s -> ошибка %s" % (path, e))
 
+    # фон интерфейса: статика под тем же входом, что и страницы
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:%d/static/bg.jpg" % PORT,
+                                    timeout=10) as r:
+            body = r.read()
+            lines.append("%-10s -> %s, %s, %d байт, кэш: %s" % (
+                "/static/", r.status, r.headers.get("Content-Type"), len(body),
+                r.headers.get("Cache-Control")))
+    except Exception as e:
+        lines.append("%-10s -> ошибка %s" % ("/static/", e))
+
     # проверка кнопок веб-интерфейса: POST /run/score (безопасная переоценка)
     class _NoRedirect(urllib.request.HTTPRedirectHandler):
         """Не идём по редиректу, чтобы увидеть сам код 303 и Location."""

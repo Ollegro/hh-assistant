@@ -13,28 +13,68 @@ from . import analytics, areas, jobs, llm, queue, storage
 from .config import BASE, get_settings
 
 CSS = """
-body{font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:0;background:#f6f7f9;color:#1c1f24}
-header{background:#fff;border-bottom:1px solid #e3e6ea;padding:14px 22px;display:flex;gap:18px;align-items:center}
-header b{font-size:16px}
-header span{color:#5a6472;font-size:13px}
-main{padding:18px 22px;max-width:1200px}
-table{border-collapse:collapse;width:100%;background:#fff;border:1px solid #e3e6ea;border-radius:8px;overflow:hidden}
-th,td{padding:9px 12px;border-bottom:1px solid #eef0f3;font-size:13.5px;text-align:left;vertical-align:top}
-th{background:#fafbfc;color:#5a6472;font-weight:600}
+*{box-sizing:border-box}
+body{font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:0;min-height:100vh;color:#2b2438;
+background:#dccbf5 url('/static/bg.jpg') center/cover no-repeat fixed}
+header{position:sticky;top:0;z-index:20;display:flex;gap:18px;align-items:center;flex-wrap:wrap;
+padding:14px 22px;background:rgba(255,255,255,.78);backdrop-filter:blur(14px) saturate(1.15);
+border-bottom:1px solid rgba(255,255,255,.65);box-shadow:0 6px 24px rgba(84,52,140,.10)}
+header b{font-size:16px;letter-spacing:.2px}
+header span{color:#5d5470;font-size:13px}
+main{padding:20px 22px 40px;max-width:1200px;margin:0 auto}
+table{display:block;overflow-x:auto;border-collapse:separate;border-spacing:0;width:100%;
+background:rgba(255,255,255,.82);
+border:1px solid rgba(255,255,255,.70);border-radius:14px;box-shadow:0 10px 30px rgba(84,52,140,.12)}
+th,td{padding:9px 12px;border-bottom:1px solid rgba(120,90,170,.14);font-size:13.5px;text-align:left;vertical-align:top}
+th{background:rgba(250,247,255,.86);color:#5d5470;font-weight:600;white-space:nowrap}
 tr:last-child td{border-bottom:none}
+tbody tr:hover td{background:rgba(246,240,255,.72)}
 .score{font-weight:700}
-.s-high{color:#1a7f37}.s-mid{color:#9a6700}.s-low{color:#a40e26}
-a{color:#1a4d8f;text-decoration:none}a:hover{text-decoration:underline}
-.btn{display:inline-block;padding:7px 12px;border-radius:6px;border:1px solid #d0d7de;background:#fff;cursor:pointer;font-size:13px}
-.btn.primary{background:#1a4d8f;border-color:#1a4d8f;color:#fff}
-textarea{width:100%;min-height:420px;padding:12px;border:1px solid #d0d7de;border-radius:8px;font-family:ui-monospace,Consolas,monospace;font-size:13px;line-height:1.5}
-.meta{color:#5a6472;font-size:13px;margin-bottom:10px}
-.meta b{color:#1c1f24}
-.actions{display:flex;gap:10px;margin:12px 0}
-.card{background:#fff;border:1px solid #e3e6ea;border-radius:8px;padding:16px;margin-bottom:14px}
-.reasons{font-size:12.5px;color:#5a6472}
+.s-high{color:#0f7a3d}.s-mid{color:#96660a}.s-low{color:#a01a2c}
+a{color:#6b3fc4;text-decoration:none}a:hover{text-decoration:underline}
+.btn{display:inline-block;padding:8px 13px;border-radius:10px;border:1px solid rgba(120,90,170,.25);
+background:rgba(255,255,255,.92);color:#3a2d52;cursor:pointer;font-size:13px;font-family:inherit;
+box-shadow:0 2px 8px rgba(84,52,140,.08);transition:transform .12s ease,box-shadow .12s ease}
+.btn:hover{transform:translateY(-1px);box-shadow:0 6px 16px rgba(84,52,140,.16)}
+.btn.primary{background:linear-gradient(135deg,#8b5cf6,#d06ef0);border-color:transparent;color:#fff}
+select{padding:7px 10px;border-radius:10px;border:1px solid rgba(120,90,170,.25);
+background:rgba(255,255,255,.92);color:#3a2d52;font-size:13px;font-family:inherit}
+textarea{width:100%;min-height:420px;padding:12px;border:1px solid rgba(120,90,170,.22);border-radius:12px;
+background:rgba(255,255,255,.94);color:#2b2438;font-family:ui-monospace,Consolas,monospace;
+font-size:13px;line-height:1.5}
+.meta{margin:4px 0 12px;padding:10px 14px;border-radius:12px;background:rgba(255,255,255,.74);
+color:#5d5470;font-size:13px;box-shadow:0 4px 16px rgba(84,52,140,.08)}
+.meta b{color:#2b2438}
+.actions{display:flex;gap:10px;margin:12px 0;flex-wrap:wrap;align-items:center}
+.card{background:rgba(255,255,255,.84);backdrop-filter:blur(12px);border:1px solid rgba(255,255,255,.72);
+border-radius:14px;padding:16px;margin-bottom:14px;box-shadow:0 10px 28px rgba(84,52,140,.12)}
+.reasons{font-size:12.5px;color:#5d5470}
 textarea.queries-text{min-height:140px}
+@media (max-width:760px){main{padding:12px}th,td{padding:7px 9px;font-size:12.5px}
+header{padding:10px 14px;gap:10px}}
 """
+
+
+
+STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+STATIC_TYPES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+                ".svg": "image/svg+xml", ".ico": "image/x-icon",
+                ".css": "text/css; charset=utf-8"}
+
+
+def static_file(name):
+    """Путь к файлу из hhassist/static или None.
+
+    Разрешены только известные расширения и простые имена (без каталогов),
+    поэтому запрос не может выйти за пределы каталога статики.
+    """
+    safe = os.path.basename(name or "")
+    if not safe or safe != name:
+        return None
+    if os.path.splitext(safe)[1].lower() not in STATIC_TYPES:
+        return None
+    path = os.path.join(STATIC_DIR, safe)
+    return path if os.path.isfile(path) else None
 
 
 def esc(x):
@@ -138,7 +178,9 @@ def render_index(conn, threshold, limit, msg="", area="", region=""):
         "<a class='btn' href='/funnel'>Воронка и ответы</a>" % collect_regions
     )
     parts = [
-        "<html><head><meta charset='utf-8'><title>hh-assistant</title><style>%s</style></head><body>" % CSS,
+        "<html><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+        "<title>hh-assistant</title><style>%s</style></head><body>" % CSS,
         "<header><b>hh-assistant</b><span>вакансий: %d · оценено: %d · писем: %d · откликов: %d · "
         "ответов: %d · сегодня: %d · остаток лимита: %d</span><span>%s</span></header><main>" % (
             st["vacancies"], st["scored"], st["letters"], st["applications"], st["replied"],
@@ -209,6 +251,7 @@ def render_funnel(conn, wait_days=None):
     c = analytics.conversions(f)
     parts = [
         "<html><head><meta charset='utf-8'><title>Воронка — hh-assistant</title>"
+        "<meta name='viewport' content='width=device-width, initial-scale=1'>"
         "<style>%s</style></head><body>" % CSS,
         "<header><b><a href='/'>← к списку</a></b><span>воронка откликов · "
         "окно ожидания ответа: %d дн.</span></header><main>" % wait_days,
@@ -418,7 +461,9 @@ def render_card(conn, vacancy_id, msg=""):
     else:
         status_line = "ещё не отмечен"
     parts = [
-        "<html><head><meta charset='utf-8'><title>%s</title><style>%s</style></head><body>" % (esc(row["title"]), CSS),
+        "<html><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+        "<title>%s</title><style>%s</style></head><body>" % (esc(row["title"]), CSS),
         "<header><b><a href='/'>← к списку</a></b><span>%s</span>"
         "<a class='btn' href='/funnel'>Воронка</a></header><main>" % esc(row["company"]),
         ("<div class='card'>%s</div>" % esc(msg)) if msg else "",
@@ -517,13 +562,27 @@ def auth_ok(settings, header):
 class Handler(BaseHTTPRequestHandler):
     server_version = "hh-assistant/0.1"
 
-    def _send(self, body, status=200, ctype="text/html; charset=utf-8"):
+    def _send(self, body, status=200, ctype="text/html; charset=utf-8", headers=None):
         data = body.encode("utf-8") if isinstance(body, str) else body
         self.send_response(status)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(data)
+
+    def _static(self, name):
+        """Отдать файл из hhassist/static (только известные расширения)."""
+        path = static_file(name)
+        if not path:
+            self._send("not found", status=404, ctype="text/plain; charset=utf-8")
+            return
+        with open(path, "rb") as fh:
+            data = fh.read()
+        self._send(data, ctype=STATIC_TYPES[os.path.splitext(path)[1].lower()],
+                   headers={"Cache-Control": "public, max-age=604800"})
+
 
     def _redirect(self, to):
         self.send_response(303)
@@ -540,9 +599,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def _deny(self, text, status=403):
         """Страница отказа: 401 просит у браузера логин/пароль, 403 — просто запрет."""
-        page = ("<html><head><meta charset='utf-8'><title>hh-assistant: вход</title></head>"
-                "<body style='font-family:Segoe UI,Arial,sans-serif;padding:40px;max-width:660px'>"
-                "<h3>Доступ закрыт</h3><p>%s</p></body></html>" % esc(text))
+        page = ("<html><head><meta charset='utf-8'>"
+                "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+                "<title>hh-assistant: вход</title><style>" + CSS + "</style></head><body>"
+                "<main><div class='card' style='margin-top:10vh;max-width:560px'>"
+                "<h3 style='margin:0 0 8px'>Доступ закрыт</h3>"
+                "<p style='margin:0;color:#5d5470'>" + esc(text) + "</p>"
+                "</div></main></body></html>")
         data = page.encode("utf-8")
         self.send_response(status)
         if status == 401:
@@ -574,6 +637,9 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authorized():
             return
         path = urllib.parse.urlparse(self.path).path
+        if path.startswith("/static/"):
+            self._static(path[len("/static/"):])
+            return
         conn = storage.connect()
         try:
             if path == "/":
@@ -603,8 +669,12 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/export":
                 out_dir = os.path.join(BASE, "out")
                 made = jobs.export_letters(conn, out_dir)
-                self._send("<html><meta charset='utf-8'><body><p>Экспортировано писем: %d в %s</p>"
-                           "<p><a href='/'>← назад</a></p></body></html>" % (made, esc(out_dir)))
+                self._send("<html><head><meta charset='utf-8'>"
+                           "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+                           "<title>Экспорт писем</title><style>" + CSS + "</style></head><body>"
+                           "<main><div class='card'>Экспортировано писем: <b>%d</b> в %s</div>"
+                           "<div class='actions'><a class='btn' href='/'>← назад</a></div>"
+                           "</main></body></html>" % (made, esc(out_dir)))
             else:
                 self._send("not found", status=404)
         finally:
