@@ -150,9 +150,11 @@ class ToolbarTest(Base):
     def test_logout_stands_right_of_reset_filters(self):
         """«Выйти» — в нижней панели сразу после «Сбросить фильтры», а не в середине страницы."""
         page = web.render_index(self.conn, 10)
-        actions = page[page.index("<div class='actions'>"):]
+        # на странице два .actions: редактор запросов и нижняя панель — берём последнюю
+        bottom = page.rindex("<div class='actions'>")
+        actions = page[bottom:]
         self.assertLess(actions.index("Сбросить фильтры"), actions.index("action='/logout'"))
-        self.assertNotIn("action='/logout'", page[:page.index("<div class='actions'>")])
+        self.assertNotIn("action='/logout'", page[:bottom])
 
     def test_css_keeps_same_height_for_buttons_and_selects(self):
         css = web.CSS.replace("\n", "")
