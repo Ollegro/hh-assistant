@@ -233,6 +233,49 @@ def cmd_reset(args):
     return 0
 
 
+def cmd_user(args):
+    """Пользователи: add / list / block / unblock / passwd / extend."""
+    from hhassist import accounts
+    action = args.user_action
+    if action == "add":
+        user_id, password = accounts.create_user(
+            args.email, password=args.password, plan_code=args.plan,
+            days=args.days, is_admin=args.admin)
+        print("пользователь %d создан" % user_id)
+        print("e-mail:  %s" % accounts.normalise_email(args.email))
+        print("пароль:  %s" % password)
+        print("период:  %d дн." % args.days)
+        print("пароль показывается один раз — передайте его пользователю")
+        return 0
+    if action == "list":
+        rows = accounts.list_users()
+        print("%-4s %-32s %-8s %-8s %-12s %s" % (
+            "id", "e-mail", "статус", "тариф", "оплачено до", "админ"))
+        for user in rows:
+            print("%-4d %-32s %-8s %-8s %-12s %s" % (
+                user["id"], user["email"], user["status"], user["plan_code"],
+                user["paid_until"] or "-", "да" if user["is_admin"] else ""))
+        return 0
+    if action == "block":
+        accounts.set_status(args.id, "blocked")
+        print("заблокирован: %d" % args.id)
+        return 0
+    if action == "unblock":
+        accounts.set_status(args.id, "active")
+        print("разблокирован: %d" % args.id)
+        return 0
+    if action == "passwd":
+        password = accounts.set_password(args.id, args.password)
+        print("новый пароль: %s" % password)
+        return 0
+    if action == "extend":
+        paid_until = accounts.extend(args.id, args.days, args.plan)
+        print("продлено до %s" % paid_until)
+        return 0
+    print("неизвестное действие: %s" % action)
+    return 2
+
+
 def cmd_list(args):
     conn = storage.connect()
     rows = conn.execute(
@@ -325,6 +368,28 @@ def main(argv=None):
     p.add_argument("--file", default=None,
                    help="файл с новым текстом письма (UTF-8); правка больше не перегенерируется")
     p.set_defaults(func=cmd_letter)
+
+    p = sub.add_parser("user", help="пользователи: add/list/block/unblock/passwd/extend")
+    us = p.add_subparsers(dest="user_action", required=True)
+    a = us.add_parser("add", help="создать пользователя (по заявке)")
+    a.add_argument("--email", required=True)
+    a.add_argument("--password", default=None, help="иначе сгенерируется и покажется один раз")
+    a.add_argument("--days", type=int, default=1, help="пробный/оплаченный период, дней")
+    a.add_argument("--plan", default="trial", choices=("trial", "basic", "pro"))
+    a.add_argument("--admin", action="store_true", help="права администратора")
+    us.add_parser("list", help="список пользователей")
+    a = us.add_parser("block", help="заблокировать вход")
+    a.add_argument("id", type=int)
+    a = us.add_parser("unblock", help="разблокировать вход")
+    a.add_argument("id", type=int)
+    a = us.add_parser("passwd", help="сменить или сгенерировать пароль")
+    a.add_argument("id", type=int)
+    a.add_argument("--password", default=None)
+    a = us.add_parser("extend", help="продлить подписку")
+    a.add_argument("id", type=int)
+    a.add_argument("--days", type=int, required=True)
+    a.add_argument("--plan", default=None, choices=("trial", "basic", "pro"))
+    p.set_defaults(func=cmd_user)
 
     p = sub.add_parser("reset", help="удалить базу данных (для пересбора)")
     p.add_argument("--yes", action="store_true")
