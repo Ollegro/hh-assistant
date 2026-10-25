@@ -121,6 +121,20 @@ CREATE TABLE IF NOT EXISTS events (
 );
 """
 
+# Индексы под выборки списка: подсчёт откликов по вакансии, сводка по
+# статусам, фильтр по региону и сортировка по дате. Создаются после миграций:
+# в старой базе нужных колонок (region) ещё нет на момент создания схемы.
+INDEXES = """
+CREATE INDEX IF NOT EXISTS idx_applications_vacancy ON applications(vacancy_id);
+CREATE INDEX IF NOT EXISTS idx_applications_status ON applications(status, vacancy_id);
+CREATE INDEX IF NOT EXISTS idx_vacancies_region ON vacancies(region);
+CREATE INDEX IF NOT EXISTS idx_vacancies_created ON vacancies(created_at);
+"""
+
+# Версия схемы: хранится в самой базе (PRAGMA user_version), поэтому у новой
+# и у старой базы одинаковый путь обновления, а повторно схему создавать не надо.
+SCHEMA_VERSION = 1
+
 
 # Сколько секунд ждать освобождения базы, прежде чем сообщить «database is locked».
 LOCK_TIMEOUT = 30.0
@@ -141,9 +155,25 @@ def connect(timeout=LOCK_TIMEOUT):
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=%d" % int(timeout * 1000))
     conn.execute("PRAGMA synchronous=NORMAL")
+    _prepare(conn)
+    return conn
+
+
+def _prepare(conn):
+    """Готовит базу: таблицы, индексы и миграции — один раз на базу, а не на подключение.
+
+    Версия схемы лежит в самой базе (PRAGMA user_version): новая база и старая
+    проходят одинаковый путь, а повторное executescript при каждом запросе веба
+    (создание таблиц и проверка миграций) убрано.
+    """
+    version = conn.execute("PRAGMA user_version").fetchone()[0]
+    if version >= SCHEMA_VERSION:
+        return
     conn.executescript(SCHEMA)
     _migrate(conn)
-    return conn
+    conn.executescript(INDEXES)
+    conn.execute("PRAGMA user_version = %d" % SCHEMA_VERSION)
+    conn.commit()
 
 
 # Колонки, добавленные после первого релиза: старые базы догоняем через ALTER.
@@ -323,17 +353,6 @@ def log_event(conn, kind, payload=None, commit=True):
     )
     if commit:
         conn.commit()
-
-
-def pending_vacancies(conn, min_score=None, limit=50):
-    sql = """SELECT v.*, s.score, s.verdict, s.reasons,
-                    (SELECT COUNT(*) FROM applications a WHERE a.vacancy_id = v.id) AS applied
-             FROM vacancies v
-             LEFT JOIN scores s ON s.vacancy_id = v.id
-             WHERE (s.score IS NULL OR s.score >= ?)
-             ORDER BY COALESCE(s.score, 0) DESC, v.created_at DESC
-             LIMIT ?"""
-    return conn.execute(sql, (min_score if min_score is not None else -1, limit)).fetchall()
 
 
 def vacancy_with_letter(conn, vacancy_id):

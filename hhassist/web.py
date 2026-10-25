@@ -303,6 +303,9 @@ def render_index(conn, limit, msg="", region="", filters=None, page=1):
                  ".filter-values label{display:block;font-weight:400;padding:4px}"
                  ".filter-menu input[type=search]{width:100%;padding:7px}</style>")
     parts.append("<table><thead><tr>")
+    # Значения всех колонок считаем за один проход по строкам (options_all),
+    # а не пересчитываем меню семь раз подряд.
+    menu = vacancy_filters.options_all(all_rows, filters)
     for col, title in vacancy_filters.COLUMNS:
         active = " (%d)" % len(filters[col]) if filters[col] else ""
         parts.append("<th>%s <details class='column-filter'><summary aria-label='Фильтр: %s'>"
@@ -312,7 +315,7 @@ def render_index(conn, limit, msg="", region="", filters=None, page=1):
                      "this.nextElementSibling.querySelectorAll('label').forEach(function(l){"
                      "l.hidden=!l.textContent.toLocaleLowerCase().includes(q)});\">" % title)
         parts.append("<div class='filter-values'>")
-        for value in vacancy_filters.options(all_rows, col, filters):
+        for value in menu.get(col, []):
             parts.append("<label><input form='column-filters' type='checkbox' name='f_%s' "
                          "value='%s'%s> %s</label>" % (col, esc(value),
                          " checked" if value in filters[col] else "", esc(value)))

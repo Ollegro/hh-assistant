@@ -10,6 +10,9 @@ DATA_DIR = os.path.join(BASE, "data")
 PROFILE_PATH = os.path.join(BASE, "config", "profile.json")
 ENV_PATH = os.path.join(BASE, ".env")
 
+# Кэш прочитанных файлов (ключ — путь, значение — отпечаток и текст).
+_TEXT_CACHE = {}
+
 # Идентификаторы регионов hh.ru: полный справочник — https://api.hh.ru/areas/113
 AREA_ALIASES = {"russia": 113, "rf": 113, "moscow": 1, "msk": 1, "spb": 2, "piter": 2}
 DEFAULT_AREAS = (113,)
@@ -127,25 +130,51 @@ class Settings:
         return bool(self.hh_app_token or (self.hh_client_id and self.hh_client_secret))
 
 
+def read_text(path):
+    """Текст файла с кэшем: перечитывается, только если файл изменился на диске.
+
+    .env и profile.json читаются на каждый запрос веба (настройки, профиль),
+    а меняются редко. Кэш ключуется по времени изменения и размеру файла,
+    поэтому правка профиля или .env видна сразу, а лишних чтений диска нет.
+    """
+    stamp = None
+    try:
+        info = os.stat(path)
+        stamp = (info.st_mtime_ns, info.st_size)
+    except OSError:
+        pass
+    cached = _TEXT_CACHE.get(path)
+    if stamp is not None and cached is not None and cached[0] == stamp:
+        return cached[1]
+    text = None
+    if stamp is not None:
+        try:
+            with open(path, encoding="utf-8") as fh:
+                text = fh.read()
+        except OSError:
+            text = None
+    _TEXT_CACHE[path] = (stamp, text)
+    return text
+
+
 def load_env(path=ENV_PATH):
+    """Переменные из .env: KEY=VALUE, кавычки снимаются, # — комментарий."""
     env = {}
-    if os.path.isfile(path):
-        with open(path, encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                key, value = line.split("=", 1)
-                env[key.strip()] = value.strip().strip('"').strip("'")
+    for line in (read_text(path) or "").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        env[key.strip()] = value.strip().strip('"').strip("'")
     return env
 
 
 def load_profile(path=PROFILE_PATH):
-    if os.path.isfile(path):
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
+    """Профиль соискателя: config/profile.json поверх значений по умолчанию."""
+    text = read_text(path)
+    if text:
         merged = dict(DEFAULT_PROFILE)
-        merged.update(data)
+        merged.update(json.loads(text))
         return merged
     return dict(DEFAULT_PROFILE)
 

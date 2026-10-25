@@ -3,7 +3,6 @@
 import gzip
 import html as html_lib
 import io
-import json
 import re
 import time
 import urllib.error
@@ -299,18 +298,6 @@ def fetch_vacancy(vacancy_id, pause=1.2):
     if pause:
         time.sleep(pause)
     return data
-
-
-def save_raw(vacancy_id, html_text, out_dir):
-    """Сохраняет исходный HTML (для отладки парсера)."""
-    path = "%s/%s.html" % (out_dir.rstrip("/"), vacancy_id)
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(html_text)
-    return path
-
-
-def to_json(vacancies):
-    return json.dumps(vacancies, ensure_ascii=False, indent=1)
 
 
 def collect(query, area=1, pages=1, per_page=50, limit=None, source=None, details=True,

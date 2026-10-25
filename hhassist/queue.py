@@ -39,17 +39,22 @@ def next_batch(conn, limit=50, only_new=True, cooldown_days=None, region=""):
     region — субъект РФ; фильтр применяется в SQL, а не после выборки.
     """
     cooled = cooldown_companies(conn, cooldown_days)
+    # Счётчик откликов берётся одним проходом по applications (LEFT JOIN по
+    # сгруппированной выборке), а не подзапросом на каждую строку: при тысячах
+    # вакансий коррелированный COUNT(*) стоил сотни миллисекунд на страницу.
+    # Текст писем в список не тянем — карточка читает его отдельно.
     sql = """SELECT v.id, v.title, v.company, v.url, v.work_format, v.experience,
                     v.area, v.region, v.salary_from, v.salary_to, v.currency,
-                    s.score, s.verdict, s.reasons, l.text AS letter,
-                    (SELECT COUNT(*) FROM applications a WHERE a.vacancy_id = v.id) AS applied
+                    s.score, s.verdict, s.reasons,
+                    COALESCE(a.applied, 0) AS applied
              FROM vacancies v
              LEFT JOIN scores s ON s.vacancy_id = v.id
-             LEFT JOIN letters l ON l.vacancy_id = v.id
+             LEFT JOIN (SELECT vacancy_id, COUNT(*) AS applied FROM applications
+                        GROUP BY vacancy_id) a ON a.vacancy_id = v.id
              WHERE 1 = 1"""
     params = []
     if only_new:
-        sql += " AND (SELECT COUNT(*) FROM applications a WHERE a.vacancy_id = v.id) = 0"
+        sql += " AND COALESCE(a.applied, 0) = 0"
     if region:
         # старые строки собраны до появления region: сравниваем ещё и с городом,
         # иначе вакансии с area='Москва' выпадают из фильтра «Москва»

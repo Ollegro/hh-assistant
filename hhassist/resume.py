@@ -24,7 +24,7 @@ import zipfile
 from datetime import datetime
 
 from . import llm
-from .config import BASE, PROFILE_PATH, get_settings
+from .config import PROFILE_PATH, get_settings
 
 MAX_BYTES = 5 * 1024 * 1024          # больше не принимаем: это резюме, а не архив
 MAX_TEXT = 60000                      # столько символов разбираем (остальное отбрасываем)
@@ -581,16 +581,6 @@ def save_profile(profile, path=None):
         json.dump(profile, fh, ensure_ascii=False, indent=1)
         fh.write("\n")
     return backup
-
-
-def save_resume_text(text, base=None):
-    """Кладёт исходный текст резюме в data/resume.txt (папка не попадает в git)."""
-    folder = os.path.join(base or BASE, "data")
-    os.makedirs(folder, exist_ok=True)
-    path = os.path.join(folder, "resume.txt")
-    with open(path, "w", encoding="utf-8", newline="\n") as fh:
-        fh.write((text or "").strip() + "\n")
-    return path
 
 
 def money(value):

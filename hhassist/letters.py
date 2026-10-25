@@ -161,16 +161,3 @@ def make_letter(v, profile, settings=None):
         model = "offline"
     return text, model
 
-
-def save_letter_file(vacancy, text, out_dir):
-    """Сохраняет письмо в .txt (UTF-8 без BOM, CRLF) и в .md."""
-    os.makedirs(out_dir, exist_ok=True)
-    safe = re.sub(r"[^\w\-]+", "_", "%s_%s" % (vacancy.get("id", ""), vacancy.get("title", "")))[:60]
-    txt_path = os.path.join(out_dir, safe + ".txt")
-    md_path = os.path.join(out_dir, safe + ".md")
-    with open(txt_path, "w", encoding="utf-8", newline="") as f:
-        f.write(text.replace("\r\n", "\n").replace("\n", "\r\n"))
-    with open(md_path, "w", encoding="utf-8", newline="\n") as f:
-        f.write("# Письмо — %s (%s)\n\n%s\n" % (vacancy.get("title", ""), vacancy.get("company", ""), text))
-    return txt_path
-
