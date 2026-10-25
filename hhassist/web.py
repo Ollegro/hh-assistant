@@ -14,7 +14,7 @@ import traceback
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import areas, jobs, llm, queue, resume, storage, web_sessions, vacancy_filters
+from . import areas, guide, jobs, llm, queue, resume, storage, web_sessions, vacancy_filters
 from .config import BASE, get_settings, load_profile
 
 CSS = """
@@ -90,6 +90,22 @@ input[type=file]{font-size:13px;color:#3a2d52;background:rgba(255,255,255,.92);
  padding:8px 10px;border:1px solid rgba(120,90,170,.22);border-radius:10px;max-width:100%}
 .profile-table th:first-child{width:190px}
 .profile-table td{white-space:pre-line}
+.guide h1{font-size:22px;margin:0 0 10px}
+.guide h2{font-size:17px;margin:0 0 8px}
+.guide p,.guide li{font-size:13.5px;line-height:1.65;color:#332b45}
+.guide ul,.guide ol{margin:8px 0 4px 20px;padding:0}
+.guide li{margin:4px 0}
+.guide .toc{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+.guide .toc a{font-size:12.5px;padding:5px 10px;border-radius:8px;background:rgba(120,90,170,.12)}
+.guide .note,.guide .warn{padding:9px 12px;border-radius:10px;margin:10px 0;font-size:13px}
+.guide .note{border-left:3px solid #3b82f6;background:rgba(59,130,246,.09)}
+.guide .warn{border-left:3px solid #b71c1c;background:rgba(183,28,28,.09)}
+.guide table{display:table;width:100%;background:transparent;border:none;box-shadow:none}
+.guide th,.guide td{font-size:13px;padding:7px 9px}
+.guide code{background:rgba(120,90,170,.12);padding:1px 5px;border-radius:5px;font-size:12.5px}
+.guide .step{font-weight:700;color:#4b3a6b}
+@media print{header,.toolbar,.actions{display:none}body{background:#fff}
+ .card{box-shadow:none;border:1px solid #ddd}.guide .toc{display:none}}
 @media (max-width:760px){main{padding:12px}th,td{padding:7px 9px;font-size:12.5px}
 header{padding:10px 14px;gap:10px}}
 """
@@ -260,6 +276,7 @@ def render_index(conn, limit, msg="", region="", filters=None, page=1):
         "<button class='btn' type='submit' formaction='/run/letters'"
         " formmethod='post'>Сгенерировать письма</button>"
         "<a class='btn' href='/export'>Экспорт писем в файлы</a>"
+        "<a class='btn' href='/help'>Руководство</a>"
         "<a class='btn danger' href='/profile'>Профиль соискателя</a>"
         "<input type='hidden' name='confirm' value='1'>"
         "<button class='btn danger' type='submit' formaction='/reset'"
@@ -564,6 +581,19 @@ def render_profile(msg="", fields=None, method="", note=""):
             "</div></form></div>" % esc(payload))
     parts.append("</main></body></html>")
     return "".join(parts)
+
+
+def render_help():
+    """Страница руководства пользователя (GET /help)."""
+    return "".join([
+        "<html><head><meta charset='utf-8'>",
+        "<meta name='viewport' content='width=device-width, initial-scale=1'>",
+        "<title>%s — hh-assistant</title><style>%s</style></head><body>" % (guide.TITLE, CSS),
+        "<header><b>hh-assistant</b><span>руководство пользователя</span>",
+        "<span style='flex:1'></span><a class='btn' href='/'>← к вакансиям</a></header><main>",
+        guide.render(),
+        "</main></body></html>",
+    ])
 
 
 # Один прогон за раз: сбор/оценка/письма пишут в SQLite и ходят в LLM минутами.
@@ -1168,6 +1198,8 @@ class Handler(BaseHTTPRequestHandler):
                            "</main></body></html>" % (made, esc(out_dir)))
             elif path == "/profile":
                 self._send(render_profile())
+            elif path == "/help":
+                self._send(render_help())
             else:
                 self._send("not found", status=404)
         finally:

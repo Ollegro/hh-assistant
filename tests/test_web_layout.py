@@ -142,7 +142,8 @@ class ToolbarTest(Base):
         end = page.index("</span>", start)
         block = page[start:end]
         for label in ("Собрать вакансии", "Оценить", "Сгенерировать письма",
-                      "Экспорт писем в файлы", "Профиль соискателя", "Очистить базу"):
+                      "Экспорт писем в файлы", "Руководство",
+                      "Профиль соискателя", "Очистить базу"):
             self.assertIn(label, block)
         self.assertEqual(block.count("btn danger"), 2)   # профиль и очистка — красные
         self.assertNotIn("</span><a class='btn'", page)
