@@ -147,6 +147,13 @@ class ToolbarTest(Base):
         self.assertEqual(block.count("btn danger"), 2)   # профиль и очистка — красные
         self.assertNotIn("</span><a class='btn'", page)
 
+    def test_logout_stands_right_of_reset_filters(self):
+        """«Выйти» — в нижней панели сразу после «Сбросить фильтры», а не в середине страницы."""
+        page = web.render_index(self.conn, 10)
+        actions = page[page.index("<div class='actions'>"):]
+        self.assertLess(actions.index("Сбросить фильтры"), actions.index("action='/logout'"))
+        self.assertNotIn("action='/logout'", page[:page.index("<div class='actions'>")])
+
     def test_css_keeps_same_height_for_buttons_and_selects(self):
         css = web.CSS.replace("\n", "")
         self.assertIn(".btn{display:inline-flex", web.CSS)

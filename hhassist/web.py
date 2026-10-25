@@ -294,8 +294,6 @@ def render_index(conn, limit, msg="", region="", filters=None, page=1):
         "без оценки: <b>%d</b> · в списке: <b>%d</b></div>" % (
             st["vacancies"], st["scored"], max(0, st["vacancies"] - st["scored"]),
             len(rows)))
-    parts.append("<form method='post' action='/logout'><button class='btn' type='submit'>"
-                 "Выйти</button></form>")
     parts.append("<div class='meta'>Найдено по фильтрам: <b>%d</b> · страница %d из %d</div>" %
                  (total, page, pages))
     parts.append("<form id='column-filters' method='get' action='/'></form>"
@@ -349,8 +347,10 @@ def render_index(conn, limit, msg="", region="", filters=None, page=1):
         if 1 <= number <= pages:
             href = "/?" + urllib.parse.urlencode(dict(query, page=number), doseq=True)
             parts.append("<a class='btn' href='%s'>%s</a>" % (esc(href), label))
-    parts.append("<a class='btn' href='/?%s'>Сбросить фильтры</a></div></main></body></html>" %
+    parts.append("<a class='btn' href='/?%s'>Сбросить фильтры</a>" %
                  esc(urllib.parse.urlencode({"region": region_value})))
+    parts.append("<form method='post' action='/logout'><button class='btn' type='submit'>"
+                 "Выйти</button></form></div></main></body></html>")
     return "".join(parts)
 
 
