@@ -207,3 +207,50 @@ bash /root/hh-src/deploy/letsencrypt-ip.sh        # доверенный на н
 ```
 
 Скрипт берёт адрес из `https://api.ipify.org`, при недоступности — из `hostname -I`.
+
+## 11. Домен: nginx + Let's Encrypt (пример `hh.jobsearch-ai.ru`)
+
+Схема: браузер → `https://hh.jobsearch-ai.ru:443` (nginx, сертификат Let's Encrypt) →
+`https://127.0.0.1:8443` (приложение со своим TLS). Порт 8443 снаружи закрыт, приложение
+слушает только loopback, cookie `Secure` сохраняется (приложение видит SSL).
+
+1. **DNS.** В панели Selectel (API rrsets иногда отдаёт 500/502, тогда только панель) добавить
+   `A hh → <IP-сервера>`, TTL 300. Для корня и `www` — отдельные записи, если нужны.
+   Проверка: `dig +short A hh.example.ru @a.ns.selectel.ru`.
+2. **nginx.** `/etc/nginx/sites-available/hh-jobsearch-ai.conf`:
+   ```nginx
+   server {
+       listen 80;
+       server_name hh.example.ru;
+       location /.well-known/acme-challenge/ { root /var/www/certbot; }
+       location / { return 301 https://$host$request_uri; }
+   }
+   server {
+       listen 443 ssl http2;
+       server_name hh.example.ru;
+       ssl_certificate     /etc/letsencrypt/live/hh.example.ru/fullchain.pem;
+       ssl_certificate_key /etc/letsencrypt/live/hh.example.ru/privkey.pem;
+       add_header Strict-Transport-Security "max-age=31536000" always;
+       client_max_body_size 10m;          # резюме до 5 МБ
+       proxy_read_timeout 300s;
+       location / {
+           proxy_pass https://127.0.0.1:8443;
+           proxy_ssl_verify off;
+           proxy_set_header Host $host;
+           proxy_set_header X-Real-IP $remote_addr;
+           proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+           proxy_set_header X-Forwarded-Proto $scheme;
+       }
+   }
+   ```
+   Затем `ln -s … sites-enabled/`, `nginx -t`, `systemctl reload nginx`.
+3. **Сертификат.** `certbot certonly --webroot -w /var/www/certbot -d hh.example.ru
+   --cert-name hh.example.ru`. Ключ `--cert-name` обязателен: без него certbot видит
+   существующий `hh-ip` и предлагает «расширить» его вместо нового сертификата.
+   Продление — общим таймером certbot, проверка `certbot renew --dry-run`.
+4. **Приложение на loopback.** `bash deploy/install.sh --host 127.0.0.1` (по умолчанию
+   `--host 0.0.0.0`), затем закрыть внешний порт: `ufw delete allow 8443/tcp`.
+   Проверка: `ss -ltnp | grep 8443` → `127.0.0.1:8443`.
+5. **Проверка домена.** `curl -I http://hh.example.ru/` → `301`; `curl -I https://hh.example.ru/`
+   → `303` на `/login`; вход работает; в ответе `Strict-Transport-Security`; в `Set-Cookie`
+   флаги `Secure`, `HttpOnly`, `SameSite=Strict`; старый `https://<IP>:8443` снаружи недоступен.

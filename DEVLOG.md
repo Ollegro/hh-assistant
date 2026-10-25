@@ -4,6 +4,42 @@
 
 ---
 
+## 25.10.2026 — домен `hh.jobsearch-ai.ru`: nginx, Let's Encrypt, приложение на loopback
+
+**DNS.** Зона `jobsearch-ai.ru` делегирована на `a–d.ns.selectel.ru` и живёт в проекте
+Selectel «aicarelabs» (id `6dc3c422…`). Добавить запись через API не удалось: `GET rrsets`
+→ 500, `POST` → 502/500, поэтому A-запись `hh → 135.106.183.205` добавлена в панели
+(TTL 3600). Проверено `dig +short A hh.jobsearch-ai.ru @a.ns.selectel.ru`.
+
+**nginx.** Новый `/etc/nginx/sites-available/hh-jobsearch-ai.conf` + симлинк в
+`sites-enabled`: порт 80 — ACME (`/var/www/certbot`) и `301`; порт 443 — сертификат
+`/etc/letsencrypt/live/hh.jobsearch-ai.ru/`, HSTS, `X-Content-Type-Options`,
+`Referrer-Policy`, `client_max_body_size 10m`, `proxy_read_timeout 300s`, прокси на
+`https://127.0.0.1:8443` с `proxy_ssl_verify off` и заголовками `Host`/`X-Real-IP`/
+`X-Forwarded-*`; на `/login` — `limit_req 20 r/m` (burst 10). Перед reload — `nginx -t`.
+
+**Сертификат.** `certbot certonly --webroot -w /var/www/certbot -d hh.jobsearch-ai.ru --cert-name hh.jobsearch-ai.ru`.
+Без `--cert-name` certbot находил существующий `hh-ip`
+и предлагал «расширить» его; с именем создан отдельный сертификат, срок до 2027-01-23,
+продление — общим таймером.
+
+**Приложение.** В `deploy/install.sh` добавлен параметр `--host` (по умолчанию `0.0.0.0`),
+в `deploy/hh-assistant.service` — `--host __HOST__`. На сервере выполнен
+`install.sh --host 127.0.0.1`; `ss` показывает `127.0.0.1:8443`, внешний порт закрыт
+(`ufw delete allow 8443/tcp`, удалены правила v4 и v6). Прямой доступ по IP:8443 больше
+не работает — только домен.
+
+**Проверено (25.10.2026):** `http://hh.jobsearch-ai.ru/` → **301**; `https://…/` без сессии →
+**303 /login**; `POST /login` → **303**; в `Set-Cookie` есть `Secure`, `HttpOnly`,
+`SameSite=Strict`; главная с сессией → **200**, 37 меню фильтров, 2 строки; в ответе HSTS.
+Чужие сайты сервера: `aicare24.ru` 200, `bot.aquacleantech.ru` 302, `mail.aquacleantech.ru`
+200, `o.gutsev.fvds.ru` 200 — конфиг nginx их не затронул.
+
+**Следующий шаг:** проверить продление (`certbot renew --dry-run`) и при желании убрать
+лишние A-записи корня/`www`, если они не нужны.
+
+---
+
 ## 25.10.2026 — «Выйти» перенесена в нижнюю панель, справа от «Сбросить фильтры»
 
 **Проблема.** Форма выхода рендерилась отдельным блоком сразу после строки статистики
