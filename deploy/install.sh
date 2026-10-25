@@ -3,7 +3,7 @@
 #
 #   sudo bash deploy/install.sh                 # код из текущего каталога -> /opt/hh-assistant
 #   sudo bash deploy/install.sh --port 9443     # другой порт
-#   sudo bash deploy/install.sh --repo URL --dir /opt/hh-assistant
+#   sudo bash deploy/install.sh --repo URL --dir /opt/hh-assistant --host 127.0.0.1
 #
 # Скрипт идемпотентен: повторный запуск обновляет код и перезапускает сервис,
 # но не перезаписывает .env и сертификаты. Пароль входа генерируется один раз
@@ -13,6 +13,7 @@ set -euo pipefail
 REPO="https://github.com/Ollegro/hh-assistant.git"
 DIR="/opt/hh-assistant"
 PORT="8443"
+HOST="0.0.0.0"          # 127.0.0.1 — когда впереди nginx с TLS на домене
 USER_NAME="hhassist"
 
 while [ $# -gt 0 ]; do
@@ -20,6 +21,7 @@ while [ $# -gt 0 ]; do
         --repo) REPO="$2"; shift 2 ;;
         --dir) DIR="$2"; shift 2 ;;
         --port) PORT="$2"; shift 2 ;;
+        --host) HOST="$2"; shift 2 ;;
         --user) USER_NAME="$2"; shift 2 ;;
         -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
         *) echo "неизвестный параметр: $1 (см. --help)"; exit 1 ;;
@@ -107,6 +109,7 @@ chmod 600 "$DIR/.env"
 
 echo "== 5/7 systemd-сервис"
 sed -e "s|__DIR__|$DIR|g" -e "s|__USER__|$USER_NAME|g" -e "s|__PORT__|$PORT|g" \
+    -e "s|__HOST__|$HOST|g" \
     "$DIR/deploy/hh-assistant.service" > /etc/systemd/system/hh-assistant.service
 systemctl daemon-reload
 systemctl enable hh-assistant >/dev/null 2>&1 || true
