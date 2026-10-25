@@ -46,6 +46,76 @@ class ParseVacancyTest(unittest.TestCase):
         self.assertEqual(self.v["source"], "html")
 
 
+class AreaTest(unittest.TestCase):
+    """Место вакансии: блок `area` самой вакансии важнее адреса работодателя.
+
+    У «Главного технолога» hh отдаёт area = Донецк (region ДНР), а address.city =
+    «Московская область». Раньше город брался из адреса, и вакансия выглядела как
+    московская, хотя фильтр региона относил её к ДНР.
+    """
+
+    AREA = '"area":{"@id":118,"name":"Донецк","path":".113.2134.118."}'
+    ADDRESS = ('"addressLocality":"Московская область",'
+               '"addressRegion":"Донецкая Народная Республика"')
+    TITLE = "Вакансия Главный технолог в Донецке, работа в компании ТД"
+
+    def parse(self, body, title=None):
+        html = ("<html><head><title>%s</title></head><body><script>{%s}</script></body></html>"
+                % (self.TITLE if title is None else title, body))
+        return collector._area(html)
+
+    def test_area_block_wins_over_employer_address(self):
+        self.assertEqual(self.parse(self.AREA + "," + self.ADDRESS),
+                         ("Донецк", "118", "Донецкая Народная Республика"))
+
+    def test_area_with_id_key_instead_of_at_id(self):
+        area = '"area":{"id":"2019","name":"Московская область","path":".113.2019."}'
+        self.assertEqual(self.parse(area)[:2], ("Московская область", "2019"))
+
+    def test_html_escaped_area_block(self):
+        escaped = ('&#34;area&#34;:{&#34;@id&#34;:118,&#34;name&#34;:&#34;Донецк&#34;,'
+                   '&#34;path&#34;:&#34;.113.2134.118.&#34;}')
+        self.assertEqual(self.parse(escaped + "," + self.ADDRESS)[:2], ("Донецк", "118"))
+
+    def test_backslash_escaped_area_block(self):
+        escaped = ('{\\"area\\":{\\"@id\\":118,\\"name\\":\\"Донецк\\",'
+                   '\\"path\\":\\".113.2134.118.\\"}}')
+        self.assertEqual(self.parse(escaped)[:2], ("Донецк", "118"))
+
+    def test_address_is_fallback_without_area(self):
+        self.assertEqual(self.parse(self.ADDRESS),
+                         ("Московская область", "", "Донецкая Народная Республика"))
+
+    def test_block_with_foreign_path_is_ignored(self):
+        wrong = '"area":{"@id":118,"name":"Чужой","path":".113.1."}'
+        self.assertEqual(self.parse(wrong + "," + self.ADDRESS)[:2],
+                         ("Московская область", ""))
+
+    def test_page_title_helps_choose_between_area_blocks(self):
+        moscow = '"area":{"@id":1,"name":"Москва","path":".113.1."}'
+        self.assertEqual(self.parse(moscow + "," + self.AREA)[:2], ("Донецк", "118"))
+
+
+class AreaRefreshTest(unittest.TestCase):
+    """Отбор вакансий для перекачки места работы (tools/refresh_areas.py)."""
+
+    @classmethod
+    def setUpClass(cls):
+        import importlib.util
+        path = os.path.join(APP, "tools", "refresh_areas.py")
+        spec = importlib.util.spec_from_file_location("refresh_areas", path)
+        cls.mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.mod)
+
+    def test_rows_without_area_id_need_refresh(self):
+        self.assertTrue(self.mod.needs_refresh(""))
+        self.assertTrue(self.mod.needs_refresh(None))
+
+    def test_rows_with_area_id_are_skipped(self):
+        self.assertFalse(self.mod.needs_refresh("118"))
+        self.assertTrue(self.mod.needs_refresh("118", force=True))
+
+
 class CleanTest(unittest.TestCase):
     def test_strips_tags_and_scripts(self):
         raw = "<div><script>var a = 1;</script>Текст   <b>жирный</b></div>"

@@ -168,27 +168,65 @@ def search_ids(query, area=1, pages=1, per_page=50, pause=1.5, remote=False):
     return ids
 
 
+def _flat(text):
+    """Страница с раскрытыми экранированными кавычками.
+
+    hh отдаёт один и тот же JSON дважды: обычным текстом и строкой, где кавычки
+    записаны как `\\"` или `&#34;`. Для разбора места работы приводим всё к
+    одному виду, иначе блок `"area"` не находится.
+    """
+    if '\\"' not in text and "&#34;" not in text and "&quot;" not in text:
+        return text
+    return (text.replace("\\&#34;", '"').replace("&#34;", '"')
+                .replace("&quot;", '"').replace('\\"', '"'))
+
+
 def _area(html_text):
     """(город, id региона, субъект РФ) вакансии.
 
-    Основной источник — JSON-LD JobPosting: `jobLocation.address.addressLocality`
-    (город) и `addressRegion` (субъект). Старый JSON-блок `"area": {"id", "name"}`
-    и разметка `data-qa` оставлены как фолбэки: hh меняет разметку без предупреждения.
+    Главный источник — блок самой вакансии `"area": {"@id", "name", "path"}`:
+    именно он определяет регион в поиске hh (у «Главного технолога» area —
+    Донецк). `address` в карточке — адрес работодателя, он может быть в другом
+    регионе (address.city = «Московская область»), поэтому город берётся из
+    area, а JSON-LD `addressLocality`/`addressRegion` и `data-qa` остаются
+    запасными вариантами.
     """
+    flat = _flat(html_text)
     city = region = ""
-    area_id = ""
-    m = re.search(r'"addressLocality"\s*:\s*"([^"]+)"', html_text)
+    area_id = area_name = ""
+    with_path = r'"area"\s*:\s*\{\s*"@?id"\s*:\s*"?(\d+)"?\s*,\s*"name"\s*:\s*"([^"]+)"\s*,\s*"path"\s*:\s*"([^"]*)"'
+    title_text = html_lib.unescape(_find(html_text, r"<title[^>]*>(.*?)</title>"))
+    # path вида ".113.2134.118." должен заканчиваться тем же id — так отсеиваются
+    # чужие блоки area (справочники регионов, похожие вакансии).
+    valid = [m for m in re.finditer(with_path, flat)
+             if m.group(3).rstrip(".").rsplit(".", 1)[-1] == m.group(1)]
+    chosen = None
+    for m in valid:
+        # В заголовке страницы hh пишет город: «Вакансия … в Донецке». Если имя
+        # блока встречается в заголовке, это область самой вакансии, а не
+        # справочник регионов выше по странице.
+        if not chosen or m.group(2) in title_text:
+            chosen = m
+        if m.group(2) in title_text:
+            break
+    if chosen is not None:
+        area_id = chosen.group(1)
+        area_name = html_lib.unescape(chosen.group(2))[:120]
+    elif not valid:
+        # старый формат блока без path: объект закрывается сразу после name
+        m = re.search(r'"area"\s*:\s*\{\s*"@?id"\s*:\s*"?(\d+)"?\s*,\s*"name"\s*:\s*"([^"]+)"\s*\}',
+                      flat)
+        if m:
+            area_id = m.group(1)
+            area_name = html_lib.unescape(m.group(2))[:120]
+    m = re.search(r'"addressLocality"\s*:\s*"([^"]+)"', flat)
     if m:
         city = html_lib.unescape(m.group(1))[:120]
-    m = re.search(r'"addressRegion"\s*:\s*"([^"]+)"', html_text)
+    m = re.search(r'"addressRegion"\s*:\s*"([^"]+)"', flat)
     if m:
         region = html_lib.unescape(m.group(1))[:120]
-    m = re.search(r'"area"\s*:\s*\{\s*"id"\s*:\s*"?(\d+)"?\s*,\s*"name"\s*:\s*"([^"]+)"',
-                  html_text)
-    if m:
-        area_id = m.group(1)
-        if not city:
-            city = html_lib.unescape(m.group(2))[:120]
+    if area_name:
+        city = area_name
     if not city:
         city = clean(_find(html_text, r'data-qa="vacancy-view-location"[^>]*>(.*?)</span>'))
     if not city:
