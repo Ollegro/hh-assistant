@@ -50,6 +50,8 @@ line-height:1;white-space:nowrap;text-decoration:none;
 box-shadow:0 2px 8px rgba(84,52,140,.08);transition:transform .12s ease,box-shadow .12s ease}
 .btn:hover{transform:translateY(-1px);box-shadow:0 6px 16px rgba(84,52,140,.16);text-decoration:none}
 .btn.primary{background:linear-gradient(135deg,#3b82f6,#1d4ed8);border-color:transparent;color:#fff}
+.btn.danger{background:linear-gradient(135deg,#ef5350,#b71c1c);border-color:transparent;color:#fff}
+.btn.danger:hover{box-shadow:0 6px 16px rgba(183,28,28,.28)}
 select{height:36px;padding:0 10px;border-radius:10px;border:1px solid rgba(120,90,170,.25);
 background:rgba(255,255,255,.92);color:#3a2d52;font-size:13px;font-family:inherit;line-height:1;
 max-width:100%}
@@ -64,7 +66,9 @@ color:#5d5470;font-size:13px;box-shadow:0 4px 16px rgba(84,52,140,.08)}
 .toolbar{display:flex;gap:10px;margin:14px 0;padding:10px 12px;flex-wrap:wrap;align-items:center;
 border-radius:14px;background:rgba(255,255,255,.86);border:1px solid rgba(255,255,255,.72);
 backdrop-filter:blur(12px) saturate(1.1);box-shadow:0 8px 24px rgba(84,52,140,.10)}
-.toolbar .buttons{display:flex;gap:10px;flex-wrap:wrap;align-items:center;flex:1 1 100%}
+.toolbar .buttons{display:flex;gap:10px;flex-wrap:nowrap;overflow-x:auto;align-items:center;
+ flex:1 1 100%;padding-bottom:2px}
+.toolbar .buttons .btn{flex:0 0 auto}
 header .btn{height:32px;padding:0 12px;font-size:12.5px}
 .card{background:rgba(255,255,255,.90);backdrop-filter:blur(12px);border:1px solid rgba(255,255,255,.72);
 border-radius:14px;padding:16px;margin-bottom:14px;box-shadow:0 10px 28px rgba(84,52,140,.12)}
@@ -256,13 +260,13 @@ def render_index(conn, limit, msg="", region="", filters=None, page=1):
         "<button class='btn' type='submit' formaction='/run/letters'"
         " formmethod='post'>Сгенерировать письма</button>"
         "<a class='btn' href='/export'>Экспорт писем в файлы</a>"
-        "</span>"
-        "<a class='btn' href='/profile'>Профиль соискателя</a>"
+        "<a class='btn danger' href='/profile'>Профиль соискателя</a>"
         "<input type='hidden' name='confirm' value='1'>"
-        "<button class='btn primary' type='submit' formaction='/reset'"
+        "<button class='btn danger' type='submit' formaction='/reset'"
         " formmethod='post'"
         " onclick='return confirm(\"Очистить всю базу вакансий, оценок, писем и откликов? Это нельзя отменить.\");'>"
         "Очистить базу</button>"
+        "</span>"
         "</form>" % _options(_region_options(conn), region_value)
     )
     parts = [

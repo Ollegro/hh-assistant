@@ -135,6 +135,18 @@ class ToolbarTest(Base):
         self.assertNotIn("Воронка", page)  # лишняя функция убрана из панели
         self.assertEqual(page.count("formaction='/run/"), 3)
 
+    def test_all_actions_stand_in_one_row(self):
+        """Все шесть кнопок — внутри одного .buttons, переносов на вторую строку нет."""
+        page = web.render_index(self.conn, 10)
+        start = page.index("<span class='buttons'>")
+        end = page.index("</span>", start)
+        block = page[start:end]
+        for label in ("Собрать вакансии", "Оценить", "Сгенерировать письма",
+                      "Экспорт писем в файлы", "Профиль соискателя", "Очистить базу"):
+            self.assertIn(label, block)
+        self.assertEqual(block.count("btn danger"), 2)   # профиль и очистка — красные
+        self.assertNotIn("</span><a class='btn'", page)
+
     def test_css_keeps_same_height_for_buttons_and_selects(self):
         css = web.CSS.replace("\n", "")
         self.assertIn(".btn{display:inline-flex", web.CSS)
@@ -142,6 +154,15 @@ class ToolbarTest(Base):
         self.assertIn("select{height:36px", css)
         self.assertIn(".toolbar{display:flex", web.CSS)
         self.assertIn("align-items:center", web.CSS)
+
+    def test_danger_buttons_are_red_with_gradient(self):
+        css = web.CSS.replace("\n", "")
+        self.assertIn(".btn.danger{background:linear-gradient(", css)
+        self.assertIn("#ef5350", css)
+        self.assertIn("#b71c1c", css)
+        # ряд кнопок не переносится: на узком экране прокручивается
+        self.assertIn("flex-wrap:nowrap", css)
+        self.assertIn("overflow-x:auto", css)
 
 
 class CollectFromToolbarTest(Base):
