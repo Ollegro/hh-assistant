@@ -40,12 +40,17 @@ def cmd_collect(args):
         ", ".join(str(a) for a in area_ids), refresh_days, "да" if remote else "нет"))
     total = 0
     sources = {}
+    total_cap = int(getattr(s, "collect_total", 0) or 0)   # предел за прогон (COLLECT_TOTAL)
     for query in queries:
+        if total_cap and total >= total_cap:
+            print("достигнут предел сбора за прогон: %d" % total_cap)
+            break
         print("поиск: %s" % query)
+        per_query = min(args.limit, total_cap - total) if total_cap else args.limit
         try:
             vacancies, info = collector.collect(
                 query, area=area_ids, pages=args.pages, per_page=args.per_page,
-                limit=args.limit, source=args.source, details=not args.no_details,
+                limit=per_query, source=args.source, details=not args.no_details,
                 known=known, refresh_days=refresh_days, remote=remote,
             )
         except Exception as e:
@@ -68,6 +73,8 @@ def cmd_collect(args):
         for err in info["errors"]:
             print("  %s: ошибка загрузки (%s)" % (err["id"], err["error"]))
         for v in vacancies:
+            if total_cap and total >= total_cap:
+                break
             storage.upsert_vacancy(conn, v, commit=False)
             total += 1
             print("  + %s | %s | %s | %s" % (v["id"], v["title"][:60], v["company"][:40],

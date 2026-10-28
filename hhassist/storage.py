@@ -3,7 +3,7 @@
 import json
 import os
 import sqlite3
-from datetime import datetime, date
+from datetime import datetime, date, timedelta, timezone
 
 from .config import DATA_DIR, ensure_dirs
 
@@ -212,6 +212,86 @@ def _migrate(conn):
 
 def now():
     return datetime.now().isoformat(timespec="seconds")
+
+
+# Время в базе — «наивное» локальное время машины, где идёт процесс: сервер
+# Selectel живёт в Etc/UTC, домашний ПК — в UTC+03:00. В интерфейсе показываем
+# время по Москве и подписываем пояс, иначе 03:11 из базы читается как ночь,
+# хотя это 06:11 МСК.
+MOSCOW_OFFSET = timedelta(hours=3)
+MOSCOW_LABEL = "МСК"
+
+
+def moscow_tz():
+    """Пояс Москвы: zoneinfo, а если в системе нет базы зон — фиксированный +03:00.
+
+    В Windows и в минимальных образах Linux модуль zoneinfo может не найти
+    Europe/Moscow; московское время с 2014 года — постоянный UTC+3, поэтому
+    запасной вариант даёт тот же результат.
+    """
+    try:
+        from zoneinfo import ZoneInfo
+        return ZoneInfo("Europe/Moscow")
+    except Exception:  # noqa: BLE001 — нет tzdata, битая база зон, старая версия Python
+        return timezone(MOSCOW_OFFSET, MOSCOW_LABEL)
+
+
+def to_moscow(ts, assume_tz=None):
+    """Время из базы -> datetime в поясе Москвы. None, если строку не разобрать.
+
+    Хранимое значение не имеет зоны и означает локальное время сервера, поэтому
+    сначала привязываем его к поясу (`assume_tz`, по умолчанию — пояс процесса),
+    затем переводим в МСК: 2026-10-28T03:11:43 на сервере в UTC станет 06:11:43 МСК.
+    Явный `assume_tz` нужен тестам: результат не зависит от часового пояса машины.
+    """
+    if not ts:
+        return None
+    try:
+        value = datetime.fromisoformat(str(ts)[:19].replace(" ", "T"))
+    except ValueError:
+        return None
+    if assume_tz is None:
+        value = value.astimezone()
+    else:
+        value = value.replace(tzinfo=assume_tz)
+    return value.astimezone(moscow_tz())
+
+
+def fmt_moscow(ts, with_label=True, assume_tz=None):
+    """'2026-10-28T03:11:43' -> '28.10.2026 06:11 (МСК)'. '' — если время битое."""
+    value = to_moscow(ts, assume_tz=assume_tz)
+    if value is None:
+        return ""
+    text = value.strftime("%d.%m.%Y %H:%M")
+    return "%s (%s)" % (text, MOSCOW_LABEL) if with_label else text
+
+
+def collect_summary(payload):
+    """'сохранено 89 из 209 найденных' из payload события collect ('' — если нет чисел)."""
+    payload = payload or {}
+    try:
+        saved = int(payload.get("saved"))
+        found = int(payload.get("found"))
+    except (TypeError, ValueError):
+        return ""
+    return "сохранено %d из %d найденных" % (saved, found)
+
+
+def last_collect(conn):
+    """Последний сбор вакансий: {'ts', 'payload'} или None.
+
+    Основной источник — журнал событий: событие `collect` пишут и веб-интерфейс,
+    и CLI. Если журнал пуст (например, после кнопки «Очистить базу»), берём самое
+    позднее время, когда вакансии видели в базе, — сбор всё равно был.
+    """
+    event = last_event(conn, "collect")
+    if event and event.get("ts"):
+        return event
+    row = conn.execute(
+        "SELECT MAX(COALESCE(seen_at, created_at)) FROM vacancies").fetchone()
+    if row and row[0]:
+        return {"ts": row[0], "payload": {}}
+    return None
 
 
 def upsert_vacancy(conn, v, commit=True):

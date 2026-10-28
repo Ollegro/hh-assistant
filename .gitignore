@@ -3,6 +3,7 @@ config/profile.json
 config/tls.crt
 config/tls.key
 .env
+.env.bak-*
 data/
 out/
 *.sqlite3

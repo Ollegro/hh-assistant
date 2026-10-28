@@ -34,10 +34,18 @@ def vacancy_dict(row):
 
 
 def collect_queries(conn, queries, settings, limit=None, pages=None, on_item=None,
-                    area_ids=None):
-    """Собирает вакансии по всем запросам. Возвращает (saved, found, source, notes)."""
+                    area_ids=None, total_limit=None):
+    """Собирает вакансии по всем запросам. Возвращает (saved, found, source, notes).
+
+    `limit` — максимум вакансий на один запрос, `total_limit` — максимум за прогон
+    (по умолчанию `COLLECT_TOTAL`, сейчас 200). Предел на прогон важен, когда
+    запросов много: иначе 10 запросов по 40 вакансий дали бы 400 записей за клик
+    и лишние сотни запросов к hh.
+    """
     limit = settings.collect_limit if limit is None else limit
     pages = settings.collect_pages if pages is None else pages
+    if total_limit is None:
+        total_limit = int(getattr(settings, "collect_total", 0) or 0)
     areas = list(area_ids or getattr(settings, "collect_areas", None) or [113])
     refresh_days = int(getattr(settings, "collect_refresh_days", 0) or 0)
     remote = bool(getattr(settings, "collect_remote", False))
@@ -47,9 +55,14 @@ def collect_queries(conn, queries, settings, limit=None, pages=None, on_item=Non
     source = "html"
     notes = []
     for query in queries:
+        left = total_limit - saved if total_limit else 0
+        if total_limit and left <= 0:
+            notes.append("достигнут предел сбора за прогон: %d" % total_limit)
+            break
+        per_query = min(limit, left) if total_limit else limit
         try:
             vacancies, info = collector.collect(query, area=areas, pages=pages,
-                                                per_page=50, limit=limit, known=known,
+                                                per_page=50, limit=per_query, known=known,
                                                 refresh_days=refresh_days, remote=remote)
         except Exception as exc:  # сеть, блокировка, парсер — один запрос не рушит прогон
             notes.append("«%s»: поиск не удался (%s)" % (query, exc))
@@ -68,6 +81,8 @@ def collect_queries(conn, queries, settings, limit=None, pages=None, on_item=Non
                               {"query": query, "source": info["source"], "quality": health})
             notes.append("«%s»: похоже, парсер сломался (%s)" % (query, health))
         for v in vacancies:
+            if total_limit and saved >= total_limit:
+                break
             storage.upsert_vacancy(conn, v, commit=False)
             saved += 1
             _commit_progress(conn, saved)

@@ -26,6 +26,9 @@ padding:14px 22px;background:rgba(255,255,255,.78);backdrop-filter:blur(14px) sa
 border-bottom:1px solid rgba(255,255,255,.65);box-shadow:0 6px 24px rgba(84,52,140,.10)}
 header b{font-size:16px;letter-spacing:.2px}
 header span{color:#5d5470;font-size:13px}
+header .notice{display:inline-flex;align-items:center;gap:8px;padding:6px 12px;border-radius:10px;
+background:rgba(29,78,216,.13);color:#1d4ed8;font-weight:600;font-size:13px;
+box-shadow:inset 0 0 0 1px rgba(29,78,216,.18)}
 main{padding:20px 22px 40px;max-width:1200px;margin:0 auto}
 table{display:block;overflow-x:auto;border-collapse:separate;border-spacing:0;width:100%;
 background:rgba(255,255,255,.88);
@@ -61,6 +64,11 @@ font-size:13px;line-height:1.5}
 .meta{margin:4px 0 12px;padding:10px 14px;border-radius:12px;background:rgba(255,255,255,.84);
 color:#5d5470;font-size:13px;box-shadow:0 4px 16px rgba(84,52,140,.08)}
 .meta b{color:#2b2438}
+.balance{position:fixed;right:16px;bottom:14px;z-index:15;padding:9px 13px;border-radius:12px;
+background:rgba(255,255,255,.88);color:#5d5470;font-size:12.5px;
+box-shadow:0 6px 20px rgba(84,52,140,.18);backdrop-filter:blur(10px)}
+.balance b{color:#2b2438;font-size:13px}
+@media (max-width:760px){.balance{right:8px;bottom:8px;font-size:11.5px}}
 .actions{display:flex;gap:10px;margin:12px 0;flex-wrap:wrap;align-items:center}
 .actions form{display:flex;gap:10px;align-items:center;margin:0}
 .toolbar{display:flex;gap:10px;margin:14px 0;padding:10px 12px;flex-wrap:wrap;align-items:center;
@@ -286,23 +294,35 @@ def render_index(conn, limit, msg="", region="", filters=None, page=1):
         "</span>"
         "</form>" % _options(_region_options(conn), region_value)
     )
+    # Сообщение о действии («запущено: сбор вакансий…») — в шапке, на самом верху:
+    # раньше это была карточка под панелью, и её приходилось искать глазами.
+    notice = ("<span class='notice'>%s</span>" % esc(msg)) if msg else ""
     parts = [
         "<html><head><meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width, initial-scale=1'>"
         + ("<meta http-equiv='refresh' content='5'>" if RUN["running"] else "") +
         "<title>hh-assistant</title><style>%s</style></head><body>" % CSS,
-        "<header><b>hh-assistant</b><span>вакансий: %d · оценено: %d · писем: %d · откликов: %d · "
-        "ответов: %d · сегодня: %d · остаток лимита: %d</span><span>%s</span></header><main>" % (
+        "<header>%s<b>hh-assistant</b><span>вакансий: %d · оценено: %d · писем: %d · "
+        "откликов: %d · ответов: %d · сегодня: %d · остаток лимита: %d</span>"
+        "<span>%s</span></header><main>" % (
+            notice,
             st["vacancies"], st["scored"], st["letters"], st["applications"], st["replied"],
             st["sent_today"], left, esc(llm.describe(get_settings()))),
         toolbar,
         _queries_block(),
     ]
-    if msg:
-        parts.append("<div class='card'>%s</div>" % esc(msg))
     progress = run_progress()
     if progress:
         parts.append("<div class='meta'>%s</div>" % esc(progress))
+    collect = storage.last_collect(conn)
+    if collect:
+        # Время берём из журнала событий: плашка RUN живёт в памяти и после
+        # перезапуска сервера пуста, а сбор в базе остаётся.
+        line = "последний сбор вакансий: <b>%s</b>" % esc(storage.fmt_moscow(collect["ts"]))
+        summary = storage.collect_summary(collect.get("payload"))
+        if summary:
+            line += " · " + esc(summary)
+        parts.append("<div class='meta'>%s</div>" % line)
     warning = parser_warning(conn)
     if warning:
         parts.append("<div class='card'>%s</div>" % esc(warning))
@@ -348,7 +368,8 @@ def render_index(conn, limit, msg="", region="", filters=None, page=1):
         parts.append(
             "<tr><td class='rate'><span class='score %s'>%s</span>%s</td>"
             "<td>%s</td><td>%s</td><td>%s</td><td>%s</td>"
-            "<td>%s</td><td>%s</td><td><a class='btn' href='/v/%s'>открыть</a></td></tr>" % (
+            "<td>%s</td><td>%s</td><td><a class='btn' target='_blank' rel='noopener'"
+            " href='/v/%s'>открыть</a></td></tr>" % (
                 score_class(r["score"]), r["score"] if r["score"] is not None else "—",
                 verdict_badge(r["verdict"]),
                 esc(r["title"]), esc(r["company"]), esc(r["area"] or r["region"]),
@@ -367,8 +388,55 @@ def render_index(conn, limit, msg="", region="", filters=None, page=1):
     parts.append("<a class='btn' href='/?%s'>Сбросить фильтры</a>" %
                  esc(urllib.parse.urlencode({"region": region_value})))
     parts.append("<form method='post' action='/logout'><button class='btn' type='submit'>"
-                 "Выйти</button></form></div></main></body></html>")
+                 "Выйти</button></form></div></main>")
+    parts.append(balance_box())
+    parts.append("</body></html>")
     return "".join(parts)
+
+
+def balance_info():
+    """Баланс аккаунта LLM для плашки в углу: подпись, сумма, время проверки.
+
+    Ключ наружу не попадает: llm.balance возвращает только суммы и время.
+    """
+    s = get_settings()
+    if not llm.balance_supported(s) or not llm.is_enabled(s):
+        return {}
+    data = llm.balance(s)
+    label = (s.llm_provider or "LLM").strip()
+    if label.lower() == "deepseek":
+        label = "DeepSeek"
+    text = llm.format_balance(data)
+    if data.get("ok") and data.get("available") is False:
+        text = "⚠ " + text
+    checked = storage.fmt_moscow(data.get("checked"), with_label=False) if data.get("checked") else ""
+    return {"label": label, "text": text, "checked": checked}
+
+
+def balance_box():
+    """Плашка «сколько денег на счёте LLM» в правом нижнем углу главной.
+
+    Значение подгружается отдельным запросом `/balance`: сеть не задерживает
+    страницу, а кэш на минуту не даёт дёргать API при автообновлении.
+    """
+    s = get_settings()
+    if not llm.balance_supported(s) or not llm.is_enabled(s):
+        return ""
+    label = (s.llm_provider or "LLM").strip()
+    if label.lower() == "deepseek":
+        label = "DeepSeek"
+    return ("<div class='balance' id='llm-balance' title='остаток на счёте провайдера LLM'>"
+            "<span>%s: </span><b>…</b></div><script>(function(){"
+            "var box=document.getElementById('llm-balance');if(!box)return;"
+            "fetch('/balance',{headers:{'Accept':'application/json'}})"
+            ".then(function(r){return r.json();}).then(function(d){"
+            "if(!d||!d.text)return;box.textContent='';"
+            "var name=document.createElement('span');name.textContent=(d.label||'LLM')+': ';"
+            "var sum=document.createElement('b');sum.textContent=d.text;"
+            "var when=document.createElement('span');"
+            "when.textContent=d.checked?(' · проверено '+d.checked+' МСК'):'';"
+            "box.appendChild(name);box.appendChild(sum);box.appendChild(when);"
+            "}).catch(function(){});})();</script>" % esc(label))
 
 
 def apply_status(conn, vacancy_id, kind, note=""):
@@ -688,6 +756,7 @@ def _run_action(kind, conn, limit=None, area=None, vacancy_id="", on_item=None):
 
     if kind == "collect":
         lim = limit or s.collect_limit
+        total_lim = int(getattr(s, "collect_total", 0) or 0)
         queries = _queries()
         if s.collect_queries > 0:
             queries = queries[:s.collect_queries]
@@ -695,13 +764,16 @@ def _run_action(kind, conn, limit=None, area=None, vacancy_id="", on_item=None):
             return "нет поисковых запросов: заполните config/queries.txt"
         area_ids = [int(area)] if str(area or "").strip().isdigit() else None
         saved, found, source, notes = jobs.collect_queries(conn, queries, s, limit=lim,
-                                                           area_ids=area_ids, on_item=tick)
+                                                           area_ids=area_ids, on_item=tick,
+                                                           total_limit=total_lim or None)
         where = areas.name_of(area_ids[0]) if area_ids else "вся Россия"
         storage.log_event(conn, "collect", {"queries": queries, "saved": saved,
                                             "found": found, "source": source,
-                                            "area": where, "from": "web"})
+                                            "area": where, "limit": lim,
+                                            "total": total_lim, "from": "web"})
         report = "собрано вакансий: %d из %d найденных (источник: %s, запросов: %d, " \
-                 "лимит: %d, регион: %s)" % (saved, found, source, len(queries), lim, where)
+                 "лимит: %d на запрос, всего до %d, регион: %s)" % (
+                     saved, found, source, len(queries), lim, total_lim, where)
         if notes:
             report += "; " + "; ".join(notes[:3])
         return report
@@ -1163,6 +1235,11 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authorized():
             return
         path = urllib.parse.urlparse(self.path).path
+        if path == "/balance":
+            # Баланс LLM для плашки в углу: только суммы и время, ключ не отдаём.
+            self._send(json.dumps(balance_info(), ensure_ascii=False),
+                       ctype="application/json; charset=utf-8")
+            return
         if path.startswith("/static/"):
             self._static(path[len("/static/"):])
             return

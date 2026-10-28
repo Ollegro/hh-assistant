@@ -99,7 +99,8 @@ class Settings:
     daily_limit: int = 200
     delay_seconds: int = 0
     reply_wait_days: int = 14
-    collect_limit: int = 20
+    collect_limit: int = 40
+    collect_total: int = 200
     collect_pages: int = 1
     collect_queries: int = 0
     collect_areas: list = field(default_factory=lambda: [113])
@@ -186,7 +187,8 @@ def get_settings():
         daily_limit=int(env.get("DAILY_LIMIT", 200)),
         delay_seconds=int(env.get("DELAY_SECONDS", 0)),
         reply_wait_days=int(env.get("REPLY_WAIT_DAYS", 14)),
-        collect_limit=int(env.get("COLLECT_LIMIT", 20)),
+        collect_limit=int(env.get("COLLECT_LIMIT", 40)),
+        collect_total=int(env.get("COLLECT_TOTAL", 200)),
         collect_pages=int(env.get("COLLECT_PAGES", 1)),
         collect_queries=int(env.get("COLLECT_QUERIES", 0)),
         collect_areas=parse_areas(env.get("COLLECT_AREAS", "")),

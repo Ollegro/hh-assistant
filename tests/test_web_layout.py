@@ -103,6 +103,15 @@ class SingleRegionSelectTest(Base):
         self.assertIn("href='/v/2'", page)
 
 
+class OpenInNewTabTest(Base):
+    """Кнопка «открыть» в таблице всегда открывает карточку в новой вкладке."""
+
+    def test_table_open_link_has_blank_target(self):
+        self.scored("1")
+        page = web.render_index(self.conn, 10)
+        self.assertIn("target='_blank' rel='noopener' href='/v/1'", page)
+
+
 class ResolveRegionTest(unittest.TestCase):
     """Значение селекта региона: id hh, название (старые ссылки) и пусто."""
 
