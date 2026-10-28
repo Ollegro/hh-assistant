@@ -142,7 +142,10 @@ class ToolbarTest(Base):
                       "Экспорт писем в файлы"):
             self.assertIn(label, page)
         self.assertNotIn("Воронка", page)  # лишняя функция убрана из панели
-        self.assertEqual(page.count("formaction='/run/"), 3)
+        self.assertEqual(page.count("method='post' action='/run/"), 3)
+        # регион едет в теле POST-формы, а не через подмену метода у кнопки:
+        # на formmethod полагаться нельзя — регион терялся и сбор шёл по всей стране
+        self.assertNotIn("formmethod", page)
 
     def test_all_actions_stand_in_one_row(self):
         """Все шесть кнопок — внутри одного .buttons, переносов на вторую строку нет."""
@@ -193,6 +196,8 @@ class CollectFromToolbarTest(Base):
         quiet = mock.patch.object(web.Handler, "log_message", lambda *a, **k: None)
         quiet.start()
         self.addCleanup(quiet.stop)
+        saved_run = dict(web.RUN)
+        self.addCleanup(lambda: (web.RUN.clear(), web.RUN.update(saved_run)))
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), web.Handler)
         self.addCleanup(self.server.server_close)
         self.addCleanup(self.server.shutdown)
@@ -223,6 +228,43 @@ class CollectFromToolbarTest(Base):
         self.assertTrue(web.wait_run(30), "фоновый сбор не завершился")
         self.assertIn("собрано вакансий", web.RUN["report"])
         self.assertEqual(calls[0]["area"], [1])
+
+    def test_region_is_hidden_field_of_post_form(self):
+        """Регион лежит в hidden-поле POST-формы: что выбрано, то и уйдёт."""
+        page = web.render_index(self.conn, 10, region="1217")
+        self.assertIn("<form method='post' action='/run/collect' class='action-form'>", page)
+        self.assertIn("<input type='hidden' name='region' value='1217'>", page)
+        self.assertNotIn("formmethod", page)
+
+    def test_filters_are_kept_in_action_forms(self):
+        page = web.render_index(self.conn, 10, region="1217", filters={"f_city": ["Химки"]})
+        self.assertIn("<input type='hidden' name='f_city' value='Химки'>", page)
+
+    def test_collect_without_region_is_refused(self):
+        """Без региона сбор не начинается: раньше молча бралась «вся Россия»."""
+        status, page = self.post("/run/collect", {})
+        self.assertEqual(status, 200)
+        self.assertIn("регион сбора не выбран", page)
+        self.assertFalse(web.RUN["running"])
+        self.assertEqual(web.RUN["report"], "")
+
+    def test_region_name_in_started_message(self):
+        """В сообщении о запуске видно, по какому региону идёт сбор."""
+        calls = []
+
+        def fake_collect(query, **kwargs):
+            calls.append(dict(kwargs, query=query))
+            return [], {"source": "html", "fallback": False, "reason": "", "found": 0,
+                        "taken": 0, "new": 0, "refreshed": 0, "skipped": 0, "errors": [],
+                        "quality": collector.quality([])}
+
+        with mock.patch.object(web, "_queries", lambda: ["AI инженер"]), \
+                mock.patch.object(collector, "collect", fake_collect):
+            status, page = self.post("/run/collect", {"region": "1217"})
+        self.assertEqual(status, 200)
+        self.assertIn("регион: Алтайский край", page)
+        self.assertTrue(web.wait_run(30), "фоновый сбор не завершился")
+        self.assertEqual(calls[0]["area"], [1217])
 
     def test_score_button_works_from_same_toolbar(self):
         """Пакетная оценка уходит в фон: страница отвечает сразу, прогон идёт отдельно."""

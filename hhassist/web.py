@@ -114,6 +114,8 @@ backdrop-filter:blur(12px) saturate(1.1);box-shadow:0 8px 24px rgba(84,52,140,.1
 .toolbar .buttons{display:flex;gap:10px;flex-wrap:nowrap;overflow-x:auto;align-items:center;
  flex:1 1 100%;padding-bottom:2px}
 .toolbar .buttons .btn{flex:0 0 auto}
+.toolbar .region-form{display:flex;gap:10px;margin:0;align-items:center;flex:0 0 auto}
+.toolbar form.action-form{display:inline-flex;margin:0;padding:0}
 header .btn{height:32px;padding:0 12px;font-size:12.5px}
 .card{background:rgba(255,255,255,.90);backdrop-filter:blur(12px);border:1px solid rgba(255,255,255,.72);
 border-radius:14px;padding:16px;margin-bottom:14px;box-shadow:0 10px 28px rgba(84,52,140,.12)}
@@ -290,6 +292,33 @@ def _resolve_region(value):
     return (str(found) if found else "", text)
 
 
+def _action_form(action, label, css, region_value, hidden_filters, confirm=False,
+                 title="", onclick=""):
+    """Кнопка действия отдельной POST-формой с явным регионом.
+
+    Раньше кнопки жили в GET-форме селекта и полагались на `formmethod='post'`:
+    если браузер это не учитывал (или регион меняли и кликали до перезагрузки),
+    POST приходил без региона, сервер молча брал «вся Россия» и собирал страну
+    целиком. Теперь регион и фильтры лежат в теле самой формы: что на странице
+    выбрано — то и уйдёт на сервер.
+    """
+    extra = "<input type='hidden' name='confirm' value='1'>" if confirm else ""
+    return ("<form method='post' action='%s' class='action-form'%s>"
+            "<input type='hidden' name='region' value='%s'>%s%s"
+            "<button class='btn%s' type='submit'%s>%s</button></form>" % (
+                action, (" title='%s'" % esc(title)) if title else "",
+                esc(region_value), hidden_filters, extra, css,
+                (" onclick=\"%s\"" % onclick) if onclick else "", label))
+
+
+REGION_SYNC_JS = (
+    "<script>(function(){var s=document.getElementById('region-select');if(!s)return;"
+    "var forms=document.querySelectorAll('form.action-form');"
+    "for(var i=0;i<forms.length;i++){(function(f){f.addEventListener('submit',function(){"
+    "var h=f.querySelector(\"input[name='region']\");if(h){h.value=s.value;}});})(forms[i]);}"
+    "})();</script>")
+
+
 def render_index(conn, limit, msg="", region="", filters=None, page=1):
     region_value, region_name = _resolve_region(region)
     filters = vacancy_filters.selected(filters or {})
@@ -306,31 +335,31 @@ def render_index(conn, limit, msg="", region="", filters=None, page=1):
                              for col, values in filters.items() for v in values)
     st = storage.stats(conn)
     left = queue.can_send_today(conn, get_settings().daily_limit)
-    # Один селект региона на всю страницу: он же задаёт регион сбора (POST /run/collect)
-    # и фильтр списка. Кнопки действий — в той же форме через formaction, поэтому
-    # высота и отступы у селекта и кнопок одинаковые.
-    toolbar = (
-        "<form method='get' action='/' class='toolbar'>" + hidden_filters +
-        "<select name='region' title='регион: сбор и фильтр списка'"
-        " onchange='this.form.submit()'>%s</select>"
-        "<span class='buttons'>"
-        "<button class='btn primary' type='submit' formaction='/run/collect'"
-        " formmethod='post'>Собрать вакансии</button>"
-        "<button class='btn' type='submit' formaction='/run/score'"
-        " formmethod='post'>Оценить</button>"
-        "<button class='btn' type='submit' formaction='/run/letters'"
-        " formmethod='post'>Сгенерировать письма</button>"
-        "<a class='btn' href='/export'>Экспорт писем в файлы</a>"
-        "<a class='btn' href='/help'>Руководство</a>"
-        "<a class='btn danger' href='/profile'>Профиль соискателя</a>"
-        "<input type='hidden' name='confirm' value='1'>"
-        "<button class='btn danger' type='submit' formaction='/reset'"
-        " formmethod='post'"
-        " onclick='return confirm(\"Очистить всю базу вакансий, оценок, писем и откликов? Это нельзя отменить.\");'>"
-        "Очистить базу</button>"
-        "</span>"
-        "</form>" % _options(_region_options(conn), region_value)
-    )
+    # Селект региона — в GET-форме (он же фильтр списка), кнопки действий —
+    # отдельные POST-формы с hidden-полем region. Раньше кнопки лежали в GET-форме
+    # и зависели от formmethod: если регион не доезжал, сервер молча собирал всю
+    # Россию. Теперь регион всегда в теле запроса вместе с текущими фильтрами.
+    confirm_text = "Очистить всю базу вакансий, оценок, писем и откликов? Это нельзя отменить."
+    region_options = _options(_region_options(conn), region_value)
+    toolbar = "".join([
+        "<div class='toolbar'>",
+        "<form method='get' action='/' class='region-form'>", hidden_filters,
+        "<select name='region' id='region-select' title='регион: сбор и фильтр списка'",
+        " onchange='this.form.submit()'>", region_options, "</select></form>",
+        "<span class='buttons'>",
+        _action_form("/run/collect", "Собрать вакансии", " primary",
+                     region_value, hidden_filters),
+        _action_form("/run/score", "Оценить", "", region_value, hidden_filters),
+        _action_form("/run/letters", "Сгенерировать письма", "",
+                     region_value, hidden_filters),
+        "<a class='btn' href='/export'>Экспорт писем в файлы</a>",
+        "<a class='btn' href='/help'>Руководство</a>",
+        "<a class='btn danger' href='/profile'>Профиль соискателя</a>",
+        _action_form("/reset", "Очистить базу", " danger", region_value,
+                     hidden_filters, confirm=True, title=confirm_text,
+                     onclick="return confirm('%s');" % confirm_text),
+        "</span></div>",
+    ])
     # Сообщение о действии («запущено: сбор вакансий…») — в шапке, на самом верху:
     # раньше это была карточка под панелью, и её приходилось искать глазами.
     notice = ("<span class='notice'>%s</span>" % esc(msg)) if msg else ""
@@ -430,6 +459,7 @@ def render_index(conn, limit, msg="", region="", filters=None, page=1):
     parts.append("<form method='post' action='/logout'><button class='btn' type='submit'>"
                  "Выйти</button></form></div></main>")
     parts.append(balance_box())
+    parts.append(REGION_SYNC_JS)
     parts.append("</body></html>")
     return "".join(parts)
 
@@ -1406,18 +1436,24 @@ class Handler(BaseHTTPRequestHandler):
                 # единый селект региона (id субъекта); поле area — совместимость со старыми формами
                 value = (form.get("region") or form.get("area") or [""])[0]
                 area_id, _region = _resolve_region(value)
-                if kind == "collect" and value and not area_id:
-                    self._redirect("/?msg=" + urllib.parse.quote(
-                        "Не удалось определить регион сбора. Выберите регион из справочника."))
-                    return
                 if kind == "collect" and not area_id:
-                    area_id = "113"
+                    # раньше здесь молча подставлялась «вся Россия»: при потере региона
+                    # сбор уходил по всей стране. Лучше честно попросить выбрать регион.
+                    self._redirect("/?msg=" + urllib.parse.quote(
+                        "регион сбора не выбран или не распознан (%r) — выберите регион "
+                        "в списке и нажмите «Собрать вакансии» ещё раз" % (value or "")))
+                    return
                 if target:
                     # одна вакансия: быстрый путь, ответ сразу с результатом
                     report = run_action(kind, conn, area=area_id, vacancy_id=target)
                 else:
                     # пакетная работа (сбор, оценка всех, письма) — в фоне
                     report = start_action(kind, area=area_id)
+                    if kind == "collect":
+                        # регион виден сразу в сообщении — ошибку выбора заметно до прогона
+                        name = ("вся Россия" if str(area_id) == "113"
+                                else areas.name_of(int(area_id)) or area_id)
+                        report += " · регион: %s" % name
                 back = "/v/%s" % urllib.parse.quote(target) if target else "/"
                 extra = "&rated=1" if target and kind == "score" else ""
                 preserved = {key: values for key, values in form.items()
