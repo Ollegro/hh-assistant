@@ -104,6 +104,25 @@ class CollectQueriesTest(JobsBase):
             jobs.collect_queries(self.conn, ["a"], settings(collect_limit=7, collect_pages=3))
         self.assertEqual((calls[0]["limit"], calls[0]["pages"]), (7, 3))
 
+    def test_total_limit_stops_collection(self):
+        """COLLECT_TOTAL — предел за прогон: лишние запросы не выполняются."""
+        calls = []
+        with mock.patch.object(collector, "collect", self.fake_collect(calls, per_query=2)):
+            saved, _found, _source, notes = jobs.collect_queries(
+                self.conn, ["a", "b", "c"], settings(collect_total=3))
+        self.assertEqual(saved, 3)
+        self.assertEqual([c["query"] for c in calls], ["a", "b"])
+        self.assertEqual([c["limit"] for c in calls], [3, 1], "второй запрос добирает остаток")
+        self.assertTrue(any("предел сбора" in note for note in notes))
+        self.assertEqual(self.count("vacancies"), 3)
+
+    def test_zero_total_means_no_cap(self):
+        calls = []
+        with mock.patch.object(collector, "collect", self.fake_collect(calls)):
+            saved, _found, _source, _notes = jobs.collect_queries(
+                self.conn, ["a", "b", "c"], settings(collect_total=0))
+        self.assertEqual(saved, 6)
+
     def test_failed_query_is_logged_and_skipped(self):
         def run(query, **kwargs):
             if query == "b":

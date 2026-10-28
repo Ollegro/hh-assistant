@@ -9,17 +9,26 @@
 
 Ключ API никогда не попадает в сообщения об ошибках и в вывод приложения.
 """
+import hashlib
 import json
 import re
 import socket
 import time
 import urllib.error
 import urllib.request
+from datetime import datetime
 
 DEFAULT_TIMEOUT = 90
 DEFAULT_RETRIES = 2
 RETRY_DELAY = 1.5
 RETRY_CODES = (408, 409, 425, 429, 500, 502, 503, 504)
+
+# Баланс аккаунта: у DeepSeek это отдельный адрес на корне API (GET /user/balance).
+# Кэш на минуту, чтобы автообновление страницы каждые 5 секунд не дёргало API.
+BALANCE_PATH = "/user/balance"
+BALANCE_TTL = 60.0
+BALANCE_TIMEOUT = 5
+_BALANCE_CACHE = {}
 
 # Адреса по умолчанию: если указан LLM_PROVIDER, LLM_BASE_URL можно не заполнять.
 PROVIDERS = {
@@ -63,6 +72,92 @@ def describe(settings):
     if not resolve_base_url(settings):
         missing.append("нет LLM_BASE_URL или LLM_PROVIDER")
     return "LLM не настроен (%s) — офлайн-режим" % ", ".join(missing)
+
+
+def balance_url(settings):
+    """Адрес проверки баланса: корень API без `/v1` плюс `/user/balance`.
+
+    У DeepSeek чат живёт на `https://api.deepseek.com/v1/chat/completions`,
+    а баланс — на `https://api.deepseek.com/user/balance`, поэтому хвост `/v1`
+    отрезаем. Пустая строка — если адрес API не настроен.
+    """
+    base = resolve_base_url(settings).rstrip("/")
+    if not base:
+        return ""
+    if base.endswith("/v1"):
+        base = base[:-3]
+    return base + BALANCE_PATH
+
+
+def balance_supported(settings):
+    """Провайдер умеет отдавать баланс аккаунта (сейчас — DeepSeek)."""
+    provider = (getattr(settings, "llm_provider", "") or "").strip().lower()
+    return provider == "deepseek" or "deepseek" in resolve_base_url(settings).lower()
+
+
+def _fetch_balance(settings, url, timeout):
+    """Один запрос за балансом. Секрет остаётся только в заголовке запроса."""
+    request = urllib.request.Request(url, headers={
+        "Authorization": "Bearer " + settings.llm_api_key,
+        "Accept": "application/json",
+    })
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8", "ignore"))
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):
+            return {"ok": False, "error": "ключ отклонён (HTTP %s)" % exc.code, "infos": []}
+        return {"ok": False, "error": "HTTP %s" % exc.code, "infos": []}
+    except (urllib.error.URLError, socket.timeout, TimeoutError) as exc:
+        return {"ok": False, "error": "нет связи (%s)" % type(exc).__name__, "infos": []}
+    except ValueError:
+        return {"ok": False, "error": "неожиданный ответ API", "infos": []}
+    infos = []
+    for item in data.get("balance_infos") or []:
+        if not isinstance(item, dict):
+            continue
+        infos.append({"currency": str(item.get("currency") or "").strip(),
+                      "total": str(item.get("total_balance") or "").strip(),
+                      "granted": str(item.get("granted_balance") or "").strip(),
+                      "topped_up": str(item.get("topped_up_balance") or "").strip()})
+    return {"ok": True, "error": "", "available": bool(data.get("is_available", True)),
+            "infos": infos,
+            "checked": datetime.now().isoformat(timespec="seconds")}
+
+
+def balance(settings, timeout=BALANCE_TIMEOUT, force=False):
+    """Баланс аккаунта LLM: {'ok', 'error', 'infos', 'checked'} без ключа в ответе.
+
+    Результат кэшируется на минуту: страница с идущим прогоном обновляется каждые
+    5 секунд, и без кэша каждый показ тянул бы внешний запрос. Ошибки тоже
+    кэшируются — чтобы недоступный API не тормозил страницу.
+    """
+    if not is_enabled(settings) or not balance_supported(settings):
+        return {"ok": False, "error": "баланс не поддерживается", "infos": []}
+    url = balance_url(settings)
+    if not url:
+        return {"ok": False, "error": "нет адреса API", "infos": []}
+    key = hashlib.sha256((url + "|" + settings.llm_api_key).encode("utf-8")).hexdigest()
+    now_ts = time.time()
+    if not force:
+        cached = _BALANCE_CACHE.get(key)
+        if cached and now_ts - cached[0] < BALANCE_TTL:
+            return cached[1]
+    value = _fetch_balance(settings, url, timeout)
+    _BALANCE_CACHE.clear()          # держим только последний ключ/адрес
+    _BALANCE_CACHE[key] = (now_ts, value)
+    return value
+
+
+def format_balance(data):
+    """Текст для плашки: '12.34 CNY · 5.00 USD' или причина, почему не видно."""
+    if not data.get("ok"):
+        return data.get("error") or "баланс недоступен"
+    parts = ["%s %s" % (item["total"], item["currency"]) for item in data.get("infos") or []
+             if item.get("total")]
+    if not parts:
+        return "нет данных"
+    return " · ".join(parts)
 
 
 def _settings_int(settings, name, default):

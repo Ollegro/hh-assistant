@@ -89,8 +89,8 @@ class CollectActionTest(WebBase):
         report, calls = self.run_collect(queries)
         self.assertEqual([c["query"] for c in calls], queries)
         self.assertEqual(report, "собрано вакансий: 5 из 250 найденных "
-                                 "(источник: html, запросов: 5, лимит: 20, "
-                                 "регион: вся Россия)")
+                                 "(источник: html, запросов: 5, лимит: 20 на запрос, "
+                                 "всего до 200, регион: вся Россия)")
 
     def test_region_from_form_goes_to_collector(self):
         """Выбор региона в интерфейсе уходит в поиск hh как area=<id>."""
@@ -172,7 +172,11 @@ class CollectSettingsTest(unittest.TestCase):
 
     def test_collect_defaults(self):
         s = self.settings_from({})
-        self.assertEqual((s.collect_limit, s.collect_pages, s.collect_queries), (20, 1, 0))
+        self.assertEqual((s.collect_limit, s.collect_total, s.collect_pages,
+                          s.collect_queries), (40, 200, 1, 0))
+
+    def test_collect_total_from_env(self):
+        self.assertEqual(self.settings_from({"COLLECT_TOTAL": "150"}).collect_total, 150)
 
 
 class QueriesEditorTest(WebBase):
