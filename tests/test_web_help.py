@@ -52,6 +52,17 @@ class HelpContentTest(unittest.TestCase):
         self.assertIn("дневной лимит", self.page.lower())
         self.assertIn("сами на hh.ru", self.page)
 
+    def test_whats_new_block(self):
+        """Руководство описывает изменения 28.10.2026."""
+        for text in ("Что нового (28.10.2026)", "листается книга", "кружит лупа",
+                     "40 вакансий на запрос", "200 за прогон", "в новой вкладке",
+                     "DeepSeek", "время последнего сбора"):
+            self.assertIn(text, self.page)
+
+    def test_new_sections_keep_toc_links(self):
+        for anchor in ANCHORS:
+            self.assertIn("href='#%s'" % anchor, self.page)
+
     def test_no_secrets_in_guide(self):
         for secret in ("WEB_AUTH_PASSWORD=", "HH_APP_TOKEN=", "LLM_API_KEY=", "sk-"):
             self.assertNotIn(secret, self.page)

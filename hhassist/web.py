@@ -69,6 +69,43 @@ background:rgba(255,255,255,.88);color:#5d5470;font-size:12.5px;
 box-shadow:0 6px 20px rgba(84,52,140,.18);backdrop-filter:blur(10px)}
 .balance b{color:#2b2438;font-size:13px}
 @media (max-width:760px){.balance{right:8px;bottom:8px;font-size:11.5px}}
+/* Индикатор сбора: книга с перелистываемыми страницами и лупа, кружащая над ней.
+   Только CSS — без картинок и скриптов, поэтому видно, что прогон идёт, даже
+   если счётчик ещё нулевой, а внешние файлы не загрузились. */
+.collect-visual{display:flex;align-items:center;gap:16px;margin:4px 0 12px;padding:12px 18px;
+border-radius:14px;background:rgba(255,255,255,.86);box-shadow:0 6px 20px rgba(84,52,140,.10)}
+.collect-visual b{font-size:14px;color:#2b2438}
+.collect-visual .hint{color:#5d5470;font-size:12.5px;margin-top:3px}
+.collect-visual .scene{position:relative;width:124px;height:96px;flex:0 0 auto}
+.book{position:absolute;left:12px;bottom:6px;width:100px;height:58px;perspective:520px}
+.book .cover{position:absolute;inset:0;border-radius:5px 8px 8px 5px;
+background:linear-gradient(135deg,#8b5cf6,#2563eb);box-shadow:0 6px 14px rgba(37,99,235,.26)}
+.book .page{position:absolute;top:4px;bottom:4px;width:48%;background:#fffdf6;
+border:1px solid rgba(120,90,170,.18)}
+.book .page.left{left:2%;border-radius:3px 0 0 3px}
+.book .page.right{right:2%;border-radius:0 3px 3px 0}
+.book .page::after,.book .flip::after{content:'';position:absolute;left:10%;right:10%;top:16%;bottom:16%;
+background:repeating-linear-gradient(180deg,rgba(37,99,235,.20) 0 1.5px,transparent 1.5px 7px)}
+.book .flip{position:absolute;top:4px;bottom:4px;right:2%;width:48%;border-radius:0 3px 3px 0;
+background:linear-gradient(90deg,#fffdf6,#efe9ff);border:1px solid rgba(120,90,170,.20);
+transform-origin:left center;backface-visibility:hidden;
+animation:page-flip 2.8s ease-in-out infinite}
+.book .flip.two{animation-delay:1.4s}
+@keyframes page-flip{0%,10%{transform:rotateY(0deg)}46%,64%{transform:rotateY(-158deg)}
+92%,100%{transform:rotateY(0deg)}}
+.lens-orbit{position:absolute;left:62px;top:44px;width:0;height:0;
+animation:lens-spin 4s linear infinite}
+.lens{position:absolute;left:-13px;top:-44px;width:26px;height:26px;border-radius:50%;
+border:3px solid #1d4ed8;
+background:radial-gradient(circle at 35% 30%,rgba(255,255,255,.95),rgba(147,197,253,.50));
+box-shadow:0 3px 8px rgba(29,78,216,.35);animation:lens-spin-rev 4s linear infinite}
+.lens::after{content:'';position:absolute;left:17px;top:17px;width:3px;height:14px;border-radius:2px;
+background:#1d4ed8;transform:rotate(-45deg);transform-origin:top left}
+@keyframes lens-spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+@keyframes lens-spin-rev{from{transform:rotate(0deg)}to{transform:rotate(-360deg)}}
+@media (prefers-reduced-motion: reduce){.book .flip,.lens-orbit,.lens{animation:none}}
+@media (max-width:760px){.collect-visual .scene{width:100px;height:80px;transform:scale(.82);
+transform-origin:left bottom}}
 .actions{display:flex;gap:10px;margin:12px 0;flex-wrap:wrap;align-items:center}
 .actions form{display:flex;gap:10px;align-items:center;margin:0}
 .toolbar{display:flex;gap:10px;margin:14px 0;padding:10px 12px;flex-wrap:wrap;align-items:center;
@@ -314,6 +351,9 @@ def render_index(conn, limit, msg="", region="", filters=None, page=1):
     progress = run_progress()
     if progress:
         parts.append("<div class='meta'>%s</div>" % esc(progress))
+    indicator = run_indicator()
+    if indicator:
+        parts.append(indicator)
     collect = storage.last_collect(conn)
     if collect:
         # Время берём из журнала событий: плашка RUN живёт в памяти и после
@@ -719,6 +759,31 @@ def start_action(kind, area=None, vacancy_id=""):
     return "запущено: %s — страница обновится сама" % RUN["title"]
 
 
+def run_indicator():
+    """Картинка «идёт сбор»: листается книга, над ней кружит лупа.
+
+    Показывается только во время сбора вакансий (`RUN.kind == 'collect'`): по
+    анимации сразу видно, что приложение работает, даже если счётчик ещё нулевой.
+    Только CSS и разметка — ни картинок, ни скриптов, поэтому анимация видна и в
+    офлайне, и при отключённом JavaScript. Для `prefers-reduced-motion` движение
+    отключается в CSS, текст остаётся.
+    """
+    if not RUN["running"] or RUN["kind"] != "collect":
+        return ""
+    return ("<div class='collect-visual' role='status' aria-live='polite' "
+            "aria-label='идёт сбор вакансий'>"
+            "<div class='scene' aria-hidden='true'>"
+            "<div class='book'><span class='cover'></span>"
+            "<span class='page left'></span><span class='page right'></span>"
+            "<span class='flip'></span><span class='flip two'></span>"
+            "</div>"
+            "<div class='lens-orbit'><span class='lens'></span></div>"
+            "</div>"
+            "<div><b>идёт сбор вакансий…</b>"
+            "<div class='hint'>обработано карточек: %d · страница обновится сама</div>"
+            "</div></div>" % RUN["done"])
+
+
 def run_progress():
     """Плашка о прогоне для страницы: идёт / ошибка / результат последнего."""
     if RUN["running"]:
@@ -919,6 +984,7 @@ def render_card(conn, vacancy_id, msg="", show_rules=False):
         "<header><b><a href='/'>← к списку</a></b><span>%s</span></header><main>" % esc(row["company"]),
         ("<div class='card'>%s</div>" % esc(msg)) if msg else "",
         ("<div class='meta'>%s</div>" % esc(run_progress())) if run_progress() else "",
+        run_indicator(),
         "<div class='card'><div class='meta'><b>%s</b> · %s · опыт: %s · зарплата: %s · "
         "<span class='score %s'>оценка %s</span> %s</div>"
         "<div class='meta'>Почему такой балл:</div>%s%s"
