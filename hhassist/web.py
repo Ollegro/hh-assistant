@@ -69,14 +69,18 @@ background:rgba(255,255,255,.88);color:#5d5470;font-size:12.5px;
 box-shadow:0 6px 20px rgba(84,52,140,.18);backdrop-filter:blur(10px)}
 .balance b{color:#2b2438;font-size:13px}
 @media (max-width:760px){.balance{right:8px;bottom:8px;font-size:11.5px}}
-/* Индикатор сбора: книга с перелистываемыми страницами и лупа, кружащая над ней.
-   Только CSS — без картинок и скриптов, поэтому видно, что прогон идёт, даже
-   если счётчик ещё нулевой, а внешние файлы не загрузились. */
-.collect-visual{display:flex;align-items:center;gap:16px;margin:4px 0 12px;padding:12px 18px;
+/* Индикатор прогона: общая плашка, внутри — своя картинка под каждое действие.
+   Сбор: книга с перелистываемыми страницами и лупа на орбите.
+   Оценка: стопка листов, на которых по очереди проступают галочки.
+   Письма: лист, который заполняется строками, и карандаш, идущий по строкам.
+   Всё на CSS — без картинок и скриптов; при prefers-reduced-motion движение
+   отключается, текст остаётся. */
+.run-visual{display:flex;align-items:center;gap:16px;margin:4px 0 12px;padding:12px 18px;
 border-radius:14px;background:rgba(255,255,255,.86);box-shadow:0 6px 20px rgba(84,52,140,.10)}
-.collect-visual b{font-size:14px;color:#2b2438}
-.collect-visual .hint{color:#5d5470;font-size:12.5px;margin-top:3px}
-.collect-visual .scene{position:relative;width:124px;height:96px;flex:0 0 auto}
+.run-visual b{font-size:14px;color:#2b2438}
+.run-visual .hint{color:#5d5470;font-size:12.5px;margin-top:3px}
+.run-visual .scene{position:relative;width:124px;height:96px;flex:0 0 auto}
+/* --- сбор: книга и лупа --- */
 .book{position:absolute;left:12px;bottom:6px;width:100px;height:58px;perspective:520px}
 .book .cover{position:absolute;inset:0;border-radius:5px 8px 8px 5px;
 background:linear-gradient(135deg,#8b5cf6,#2563eb);box-shadow:0 6px 14px rgba(37,99,235,.26)}
@@ -103,8 +107,53 @@ box-shadow:0 3px 8px rgba(29,78,216,.35);animation:lens-spin-rev 4s linear infin
 background:#1d4ed8;transform:rotate(-45deg);transform-origin:top left}
 @keyframes lens-spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
 @keyframes lens-spin-rev{from{transform:rotate(0deg)}to{transform:rotate(-360deg)}}
-@media (prefers-reduced-motion: reduce){.book .flip,.lens-orbit,.lens{animation:none}}
-@media (max-width:760px){.collect-visual .scene{width:100px;height:80px;transform:scale(.82);
+/* --- оценка: стопка листов, на каждом пункте по очереди проступает галочка --- */
+.sheets{position:absolute;inset:8px 14px 8px 12px}
+.sheets .sheet{position:absolute;border-radius:4px;background:#fffdf6;
+border:1px solid rgba(120,90,170,.22);box-shadow:0 3px 9px rgba(84,52,140,.12)}
+.sheets .sheet.back{left:16px;top:18px;width:76px;height:56px;transform:rotate(-7deg)}
+.sheets .sheet.mid{left:10px;top:11px;width:80px;height:58px;transform:rotate(-4deg)}
+.sheets .checklist{position:absolute;left:4px;top:3px;width:86px;height:62px;border-radius:4px;
+background:#fffdf6;border:1px solid rgba(120,90,170,.22);
+box-shadow:0 4px 12px rgba(84,52,140,.16)}
+.sheets .row{position:absolute;left:11px;right:24px;height:3px;border-radius:2px;
+background:rgba(120,90,170,.28)}
+.sheets .row.r1{top:14px}
+.sheets .row.r2{top:29px}
+.sheets .row.r3{top:44px}
+.sheets .row::after{content:'';position:absolute;right:-19px;top:-5px;width:15px;height:8px;
+border-left:3px solid #16a34a;border-bottom:3px solid #16a34a;
+transform:rotate(-45deg) scale(0);transform-origin:left center;
+animation:tick-in 3s ease-in-out infinite}
+.sheets .row.r2::after{animation-delay:.5s}
+.sheets .row.r3::after{animation-delay:1s}
+@keyframes tick-in{0%,4%{transform:rotate(-45deg) scale(0);opacity:0}
+14%,86%{transform:rotate(-45deg) scale(1);opacity:1}
+97%,100%{transform:rotate(-45deg) scale(0);opacity:0}}
+/* --- письма: лист, который заполняется строками, и карандаш --- */
+.writing{position:absolute;inset:6px 30px 6px 10px}
+.writing .paper{position:absolute;inset:0;border-radius:4px;background:#fffdf6;
+border:1px solid rgba(120,90,170,.22);box-shadow:0 3px 10px rgba(84,52,140,.13)}
+.writing .ink{position:absolute;left:10px;height:4px;border-radius:2px;
+background:rgba(37,99,235,.42);transform-origin:left center;transform:scaleX(0);
+animation:ink-write 4.2s linear infinite}
+.writing .ink.i1{top:13px;width:62px}
+.writing .ink.i2{top:25px;width:48px;animation-delay:.35s}
+.writing .ink.i3{top:37px;width:66px;animation-delay:.7s}
+.writing .ink.i4{top:49px;width:40px;animation-delay:1.05s}
+.writing .ink.i5{top:61px;width:56px;animation-delay:1.4s}
+@keyframes ink-write{0%{transform:scaleX(0)}8%,96%{transform:scaleX(1)}
+100%{transform:scaleX(0)}}
+.writing .pencil{position:absolute;right:-4px;width:10px;height:26px;border-radius:2px;
+background:linear-gradient(180deg,#fbbf24,#b45309);transform:rotate(16deg);
+box-shadow:0 2px 6px rgba(120,60,0,.28);animation:pencil-move 4.2s ease-in-out infinite}
+.writing .pencil::after{content:'';position:absolute;left:2px;bottom:-6px;width:0;height:0;
+border-left:3px solid transparent;border-right:3px solid transparent;border-top:7px solid #1f2937}
+@keyframes pencil-move{0%,4%{top:2px}18%{top:14px}34%{top:26px}50%{top:38px}66%{top:50px}
+82%{top:60px}100%{top:2px}}
+@media (prefers-reduced-motion: reduce){.book .flip,.lens-orbit,.lens,.sheets .row::after,
+.writing .ink,.writing .pencil{animation:none}}
+@media (max-width:760px){.run-visual .scene{width:100px;height:80px;transform:scale(.82);
 transform-origin:left bottom}}
 .actions{display:flex;gap:10px;margin:12px 0;flex-wrap:wrap;align-items:center}
 .actions form{display:flex;gap:10px;align-items:center;margin:0}
@@ -789,29 +838,60 @@ def start_action(kind, area=None, vacancy_id=""):
     return "запущено: %s — страница обновится сама" % RUN["title"]
 
 
-def run_indicator():
-    """Картинка «идёт сбор»: листается книга, над ней кружит лупа.
+RUN_VISUALS = {
+    "collect": ("collect-visual", "идёт сбор вакансий…", "обработано карточек"),
+    "score": ("score-visual", "идёт оценка вакансий…", "обработано вакансий"),
+    "letters": ("letters-visual", "идёт генерация писем…", "готово писем"),
+}
 
-    Показывается только во время сбора вакансий (`RUN.kind == 'collect'`): по
-    анимации сразу видно, что приложение работает, даже если счётчик ещё нулевой.
-    Только CSS и разметка — ни картинок, ни скриптов, поэтому анимация видна и в
-    офлайне, и при отключённом JavaScript. Для `prefers-reduced-motion` движение
-    отключается в CSS, текст остаётся.
-    """
-    if not RUN["running"] or RUN["kind"] != "collect":
-        return ""
-    return ("<div class='collect-visual' role='status' aria-live='polite' "
-            "aria-label='идёт сбор вакансий'>"
-            "<div class='scene' aria-hidden='true'>"
-            "<div class='book'><span class='cover'></span>"
+
+def _scene_collect():
+    """Книга с перелистываемыми страницами и лупа, облетающая её по кругу."""
+    return ("<div class='book'><span class='cover'></span>"
             "<span class='page left'></span><span class='page right'></span>"
-            "<span class='flip'></span><span class='flip two'></span>"
-            "</div>"
-            "<div class='lens-orbit'><span class='lens'></span></div>"
-            "</div>"
-            "<div><b>идёт сбор вакансий…</b>"
-            "<div class='hint'>обработано карточек: %d · страница обновится сама</div>"
-            "</div></div>" % RUN["done"])
+            "<span class='flip'></span><span class='flip two'></span></div>"
+            "<div class='lens-orbit'><span class='lens'></span></div>")
+
+
+def _scene_score():
+    """Стопка листов и чек-лист: на каждом пункте по очереди проступает галочка."""
+    return ("<div class='sheets'><span class='sheet back'></span>"
+            "<span class='sheet mid'></span><span class='checklist'>"
+            "<span class='row r1'></span><span class='row r2'></span>"
+            "<span class='row r3'></span></span></div>")
+
+
+def _scene_letters():
+    """Лист письма, который заполняется строками, и карандаш, идущий по строкам."""
+    return ("<div class='writing'><span class='paper'></span>"
+            "<span class='ink i1'></span><span class='ink i2'></span>"
+            "<span class='ink i3'></span><span class='ink i4'></span>"
+            "<span class='ink i5'></span><span class='pencil'></span></div>")
+
+
+RUN_SCENES = {"collect": _scene_collect, "score": _scene_score,
+              "letters": _scene_letters}
+
+
+def run_indicator():
+    """Картинка текущего прогона: у сбора, оценки и писем она своя.
+
+    Сбор — книга с перелистываемыми страницами и лупа; оценка — стопка листов с
+    проступающими галочками; письма — лист, заполняемый строками, и карандаш.
+    Показывается только пока идёт соответствующий прогон, рядом счётчик. Только
+    CSS и разметка — ни картинок, ни скриптов, поэтому анимация видна и в
+    офлайне, и при отключённом JavaScript. Для `prefers-reduced-motion` движение
+    отключается в CSS, подпись остаётся.
+    """
+    kind = RUN.get("kind") or ""
+    if not RUN["running"] or kind not in RUN_VISUALS:
+        return ""
+    css, title, counter = RUN_VISUALS[kind]
+    return ("<div class='run-visual %s' role='status' aria-live='polite' "
+            "aria-label='%s'><div class='scene' aria-hidden='true'>%s</div>"
+            "<div><b>%s</b><div class='hint'>%s: %d · страница обновится сама</div>"
+            "</div></div>" % (css, esc(title), RUN_SCENES[kind](), esc(title),
+                              esc(counter), RUN["done"]))
 
 
 def run_progress():
