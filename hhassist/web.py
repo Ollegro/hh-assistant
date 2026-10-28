@@ -661,15 +661,31 @@ def save_queries(text):
 
 
 def _queries():
-    """Поисковые запросы: config/queries.txt (ручное переопределение) или из профиля-резюме."""
+    """Поисковые запросы: config/queries.txt (ручное переопределение) или из профиля-резюме.
+
+    Файл существует — значит источник истины он, даже если внутри только заголовок
+    (это состояние «список очищен», сбор попросит заполнить запросы). Подстановка
+    целевых ролей из профиля работает только пока файла нет вовсе.
+    """
     path = _queries_path()
     if os.path.isfile(path):
         with open(path, encoding="utf-8") as f:
-            items = split_queries(f.read())
-        if items:
-            return items
+            return split_queries(f.read())
     from . import matching
     return matching.build_queries(get_settings().profile)
+
+
+def clear_queries():
+    """Очищает список запросов: в config/queries.txt остаётся только заголовок.
+
+    Осознанное действие пользователя (кнопка с подтверждением): после него сбор
+    честно ответит «нет поисковых запросов», а не подставит роли из профиля.
+    """
+    path = _queries_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="\r\n") as f:
+        f.write(QUERIES_HEADER + "\n")
+    return "запросы очищены: сбор попросит заполнить список (config/queries.txt)"
 
 
 def _queries_block():
@@ -686,11 +702,18 @@ def _queries_block():
         "по одному в строке, строки с # игнорируются. Правки в списке начинают "
         "действовать только после кнопки «Сохранить запросы»: она записывает их в "
         "config/queries.txt, откуда их берёт сбор.</div>"
+        "<form method='post' action='/queries/clear' id='queries-clear'"
+        " onsubmit=\"return confirm('Очистить список запросов? Пока список пуст, "
+        "сбор работать не будет — впишите новые запросы и сохраните.');\"></form>"
         "<form method='post' action='/queries'>"
         "<textarea class='queries-text' name='queries'>%s</textarea>"
         "<div class='actions'><button class='btn primary' type='submit'"
         " title='записать список в config/queries.txt — из него берутся запросы для сбора'>"
-        "Сохранить запросы</button><span class='meta'>%s</span></div></form></div>"
+        "Сохранить запросы</button>"
+        "<button class='btn danger' type='submit' form='queries-clear'"
+        " title='убрать все запросы: в config/queries.txt останется только заголовок'>"
+        "Очистить запросы</button>"
+        "<span class='meta'>%s</span></div></form></div>"
         % (esc(text), note))
 
 
@@ -1595,6 +1618,11 @@ class Handler(BaseHTTPRequestHandler):
                 report = save_queries(text)
                 storage.log_event(conn, "queries_edit",
                                   {"queries": split_queries(text), "from": "web"})
+                self._redirect("/?msg=" + urllib.parse.quote(report))
+            elif path == "/queries/clear":
+                report = clear_queries()
+                storage.log_event(conn, "queries_edit",
+                                  {"queries": [], "cleared": True, "from": "web"})
                 self._redirect("/?msg=" + urllib.parse.quote(report))
             elif path == "/run/stop":
                 # Остановка прогона: только флаг, поток сам завершит текущую карточку.

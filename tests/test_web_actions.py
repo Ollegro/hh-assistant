@@ -247,6 +247,36 @@ class QueriesEditorTest(WebBase):
         self.assertIn("профиль (файла config/queries.txt ещё нет)", page)
         self.assertIn("RAG-разработчик", page)  # целевая роль из DEFAULT_PROFILE
 
+    def test_clear_queries_empties_list_and_keeps_header(self):
+        web.save_queries("AI инженер\nLLM инженер\n")
+        self.assertEqual(len(web._queries()), 2)
+        report = web.clear_queries()
+        self.assertIn("очищены", report)
+        self.assertEqual(web._queries(), [])          # профиль больше не подставляется
+        with open(self.path, encoding="utf-8") as f:
+            content = f.read()
+        self.assertIn("#", content)                   # заголовок остался
+        self.assertNotIn("AI инженер", content)
+
+    def test_index_shows_clear_button_with_confirm(self):
+        page = web.render_index(self.conn, 50)
+        self.assertIn("action='/queries/clear'", page)
+        self.assertIn("Очистить запросы", page)
+        self.assertIn("return confirm(", page)
+
+    def test_index_reports_zero_queries_after_clear(self):
+        web.save_queries("AI инженер\n")
+        web.clear_queries()
+        page = web.render_index(self.conn, 50)
+        self.assertIn("действующих запросов: <b>0</b>", page)
+
+    def test_collect_after_clear_asks_to_fill_queries(self):
+        web.save_queries("AI инженер\n")
+        web.clear_queries()
+        report = web.run_action("collect", self.conn)
+        self.assertIn("нет поисковых запросов", report)
+        self.assertIn("config/queries.txt", report)
+
 
 class StatusActionTest(WebBase):
     """Карточка вакансии: статусы отклика и страница «Воронка»."""
