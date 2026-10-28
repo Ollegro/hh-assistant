@@ -48,9 +48,9 @@ class Base(unittest.TestCase):
             self.addCleanup(p.stop)
 
     def running(self, kind, done=7):
-        web.RUN.update({"kind": kind, "title": kind, "done": done,
-                        "started": "2026-10-28 09:20", "report": "", "error": "",
-                        "running": True})
+        web.RUN.update({"kind": kind, "title": web.RUN_TITLES.get(kind, kind),
+                        "done": done, "started": "2026-10-28 09:20", "report": "",
+                        "error": "", "running": True, "stop": False})
 
 
 class IndexIndicatorTest(Base):
@@ -101,6 +101,36 @@ class CardIndicatorTest(Base):
         self.running("letters")
         page = web.render_card(self.conn, "1")
         self.assertIn("class='run-visual letters-visual'", page)
+
+
+class StopButtonTest(Base):
+    """Кнопка «Остановить»: видна только во время прогона и ставит флаг."""
+
+    def test_button_visible_only_while_running(self):
+        self.assertNotIn("action='/run/stop'", web.render_index(self.conn, 10))
+        self.running("collect")
+        page = web.render_index(self.conn, 10)
+        self.assertIn("action='/run/stop'", page)
+        self.assertIn("Остановить сбор вакансий", page)
+
+    def test_stop_run_sets_flag_and_reports(self):
+        self.running("collect")
+        message = web.stop_run()
+        self.assertTrue(web.RUN["stop"])
+        self.assertIn("останавливаю", message)
+        # повторный запрос не ломает состояние
+        self.assertIn("уже запрошена", web.stop_run())
+        self.assertIn("останавливаю…", web.run_progress())
+
+    def test_stop_without_run_is_harmless(self):
+        web.RUN.update({"running": False, "stop": False})
+        self.assertIn("нечего останавливать", web.stop_run())
+        self.assertFalse(web.RUN["stop"])
+
+    def test_button_disabled_after_request(self):
+        self.running("collect")
+        web.RUN["stop"] = True
+        self.assertIn("disabled", web.render_index(self.conn, 10))
 
 
 class VisualMarkupTest(unittest.TestCase):

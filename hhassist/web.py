@@ -60,6 +60,7 @@ box-shadow:0 2px 8px rgba(84,52,140,.08);transition:transform .12s ease,box-shad
 .letter-dot{display:inline-block;width:13px;height:13px;border-radius:50%;background:#16a34a;
  box-shadow:0 0 0 3px rgba(22,163,74,.16);vertical-align:middle}
 .card-company{color:#5d5470}
+.stop-form{display:flex;align-items:center;margin:6px 0 12px}
 td.vid{color:#5d5470;font-size:12.5px;white-space:nowrap}
 select{height:36px;padding:0 10px;border-radius:10px;border:1px solid rgba(120,90,170,.25);
 background:rgba(255,255,255,.92);color:#3a2d52;font-size:13px;font-family:inherit;line-height:1;
@@ -467,6 +468,15 @@ def render_index(conn, limit, msg="", region="", filters=None, page=1):
     indicator = run_indicator()
     if indicator:
         parts.append(indicator)
+    if RUN["running"]:
+        # Кнопка остановки видна только во время прогона: сбор идёт минутами,
+        # и ошибочный запуск нужно уметь прервать, не перезапуская сервис.
+        parts.append(
+            "<form method='post' action='/run/stop' class='stop-form'>"
+            "<button class='btn danger' type='submit'%s>Остановить %s</button>"
+            "<span class='meta' style='margin:0 0 0 10px;padding:0;background:none;"
+            "box-shadow:none'>уже сохранённое останется в базе</span></form>" % (
+                " disabled" if RUN.get("stop") else "", esc(RUN["title"])))
     collect = storage.last_collect(conn)
     if collect:
         # Время берём из журнала событий: плашка RUN живёт в памяти и после
@@ -829,8 +839,10 @@ RUN_BUSY = ("уже выполняется другое действие (сбо
 RUN_TITLES = {"collect": "сбор вакансий", "score": "оценка", "letters": "генерация писем"}
 
 # Состояние фонового прогона: страница отвечает сразу и показывает ход работы.
+# stop — просьба остановиться из интерфейса: фоновый поток проверяет флаг между
+# вакансиями/запросами и выходит, уже сохранённое остаётся в базе.
 RUN = {"kind": "", "title": "", "done": 0, "started": "", "report": "", "error": "",
-       "running": False}
+       "running": False, "stop": False}
 
 
 def _run_tick(*_args):
@@ -858,13 +870,14 @@ def start_action(kind, area=None, vacancy_id=""):
         return RUN_BUSY
     RUN.update({"kind": kind, "title": RUN_TITLES.get(kind, kind), "done": 0,
                 "started": storage.now()[:16].replace("T", " "), "report": "",
-                "error": "", "running": True})
+                "error": "", "running": True, "stop": False})
 
     def worker():
         conn = storage.connect()  # соединение SQLite живёт в своём потоке
         try:
             RUN["report"] = _run_action(kind, conn, area=area, vacancy_id=vacancy_id,
-                                        on_item=_run_tick)
+                                        on_item=_run_tick,
+                                        should_stop=lambda: bool(RUN.get("stop")))
         except Exception as exc:  # ошибка прогона не должна ломать страницу
             RUN["error"] = "%s: %s" % (type(exc).__name__, exc)
             traceback.print_exc()
@@ -933,11 +946,28 @@ def run_indicator():
                               esc(counter), RUN["done"]))
 
 
+def stop_run():
+    """Просит фоновый прогон остановиться. Возвращает текст для страницы.
+
+    Флаг видит поток прогона: сбор прекращает скачивать карточки и запросы,
+    оценка и письма — обрабатывать следующие вакансии. Уже сделанное остаётся.
+    """
+    if not RUN.get("running"):
+        return "нечего останавливать: прогон уже завершён"
+    if RUN.get("stop"):
+        return "остановка уже запрошена — завершаю текущую карточку"
+    RUN["stop"] = True
+    return "останавливаю: %s завершит текущую карточку и остановится" % RUN["title"]
+
+
 def run_progress():
-    """Плашка о прогоне для страницы: идёт / ошибка / результат последнего."""
+    """Плашка о прогоне для страницы: идёт / остановка / ошибка / результат последнего."""
     if RUN["running"]:
-        return "идёт %s · обработано: %d · старт: %s" % (RUN["title"], RUN["done"],
+        text = "идёт %s · обработано: %d · старт: %s" % (RUN["title"], RUN["done"],
                                                         RUN["started"])
+        if RUN.get("stop"):
+            text += " · останавливаю…"
+        return text
     if RUN["error"]:
         return "ошибка (%s): %s" % (RUN["title"], RUN["error"])
     if RUN["report"]:
@@ -964,7 +994,8 @@ def run_action(kind, conn, limit=None, area=None, vacancy_id="", on_item=None):
         RUN_LOCK.release()
 
 
-def _run_action(kind, conn, limit=None, area=None, vacancy_id="", on_item=None):
+def _run_action(kind, conn, limit=None, area=None, vacancy_id="", on_item=None,
+                should_stop=None):
     s = get_settings()
     tick = on_item or (lambda *args: None)
 
@@ -979,7 +1010,8 @@ def _run_action(kind, conn, limit=None, area=None, vacancy_id="", on_item=None):
         area_ids = [int(area)] if str(area or "").strip().isdigit() else None
         saved, found, source, notes = jobs.collect_queries(conn, queries, s, limit=lim,
                                                            area_ids=area_ids, on_item=tick,
-                                                           total_limit=total_lim or None)
+                                                           total_limit=total_lim or None,
+                                                           should_stop=should_stop)
         where = areas.name_of(area_ids[0]) if area_ids else "вся Россия"
         storage.log_event(conn, "collect", {"queries": queries, "saved": saved,
                                             "found": found, "source": source,
@@ -1002,11 +1034,13 @@ def _run_action(kind, conn, limit=None, area=None, vacancy_id="", on_item=None):
                                                   "from": "web"})
             return "вакансия %s: оценка %s из 5 (%s)" % (
                 vacancy_id, scoring.school_grade(score), verdict)
-        done, total = jobs.score_pending(conn, s, on_item=tick)
+        done, total = jobs.score_pending(conn, s, on_item=tick, should_stop=should_stop)
         storage.log_event(conn, "score", {"count": done, "model": s.llm_model or "rules",
                                           "from": "web"})
         report = "оценено новых: %d (всего оценено: %d)" % (done, total)
-        if not done:
+        if should_stop and should_stop():
+            report += " · остановлено пользователем"
+        elif not done:
             report += "; полная переоценка (после правки профиля) — python cli.py score --all"
         return report
 
@@ -1022,10 +1056,13 @@ def _run_action(kind, conn, limit=None, area=None, vacancy_id="", on_item=None):
             if kept:
                 return "письмо не изменено: сохранена ваша правка"
             return "письмо готово: %d символов (модель: %s)" % (len(text), model or "offline")
-        made = jobs.make_letters(conn, s, limit=50, on_item=tick)
+        made = jobs.make_letters(conn, s, limit=50, on_item=tick, should_stop=should_stop)
         storage.log_event(conn, "letters", {"count": made, "model": s.llm_model or "offline",
                                             "from": "web"})
-        return "создано писем: %d" % made
+        report = "создано писем: %d" % made
+        if should_stop and should_stop():
+            report += " · остановлено пользователем"
+        return report
 
     return "неизвестное действие: %s" % kind
 
@@ -1559,6 +1596,9 @@ class Handler(BaseHTTPRequestHandler):
                 storage.log_event(conn, "queries_edit",
                                   {"queries": split_queries(text), "from": "web"})
                 self._redirect("/?msg=" + urllib.parse.quote(report))
+            elif path == "/run/stop":
+                # Остановка прогона: только флаг, поток сам завершит текущую карточку.
+                self._redirect("/?msg=" + urllib.parse.quote(stop_run()))
             elif path.startswith("/run/"):
                 parts = [part for part in path.split("/") if part]  # /run/letters/<id>
                 kind = parts[1] if len(parts) > 1 else ""

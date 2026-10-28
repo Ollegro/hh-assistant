@@ -34,13 +34,16 @@ def vacancy_dict(row):
 
 
 def collect_queries(conn, queries, settings, limit=None, pages=None, on_item=None,
-                    area_ids=None, total_limit=None):
+                    area_ids=None, total_limit=None, should_stop=None):
     """Собирает вакансии по всем запросам. Возвращает (saved, found, source, notes).
 
     `limit` — максимум вакансий на один запрос, `total_limit` — максимум за прогон
     (по умолчанию `COLLECT_TOTAL`, сейчас 200). Предел на прогон важен, когда
     запросов много: иначе 10 запросов по 40 вакансий дали бы 400 записей за клик
     и лишние сотни запросов к hh.
+
+    `should_stop` — функция без аргументов; как только вернёт True, сбор
+    прекращается (кнопка «Остановить» в интерфейсе). Уже сохранённое остаётся.
     """
     limit = settings.collect_limit if limit is None else limit
     pages = settings.collect_pages if pages is None else pages
@@ -55,7 +58,11 @@ def collect_queries(conn, queries, settings, limit=None, pages=None, on_item=Non
     source = "html"
     notes = []
     saved_ids = set()
+    stopped = False
     for query in queries:
+        if should_stop and should_stop():
+            stopped = True
+            break
         left = total_limit - saved if total_limit else 0
         if total_limit and left <= 0:
             notes.append("достигнут предел сбора за прогон: %d" % total_limit)
@@ -82,6 +89,9 @@ def collect_queries(conn, queries, settings, limit=None, pages=None, on_item=Non
                               {"query": query, "source": info["source"], "quality": health})
             notes.append("«%s»: похоже, парсер сломался (%s)" % (query, health))
         for v in vacancies:
+            if should_stop and should_stop():
+                stopped = True
+                break
             if total_limit and saved >= total_limit:
                 break
             storage.upsert_vacancy(conn, v, commit=False)
@@ -90,6 +100,8 @@ def collect_queries(conn, queries, settings, limit=None, pages=None, on_item=Non
             _commit_progress(conn, saved)
             if on_item:
                 on_item(v)
+        if stopped:
+            break
     conn.commit()
     if skipped:
         notes.append("уже в базе, повторно не скачивали: %d" % skipped)
@@ -98,10 +110,13 @@ def collect_queries(conn, queries, settings, limit=None, pages=None, on_item=Non
         # Одна вакансия может прийти по двум запросам: записей больше, чем вакансий.
         notes.append("уникальных вакансий: %d (повторов между запросами: %d)"
                      % (unique, saved - unique))
+    if stopped:
+        notes.insert(0, "остановлено пользователем: сохранено %d из %d найденных"
+                        % (saved, found))
     return saved, found, source, notes
 
 
-def score_pending(conn, settings, force=False, on_item=None):
+def score_pending(conn, settings, force=False, on_item=None, should_stop=None):
     """Оценивает вакансии: по умолчанию только без оценки. Возвращает (new, total)."""
     sql = "SELECT * FROM vacancies"
     if not force:
@@ -109,6 +124,8 @@ def score_pending(conn, settings, force=False, on_item=None):
     rows = conn.execute(sql).fetchall()
     done = 0
     for row in rows:
+        if should_stop and should_stop():
+            break
         v = vacancy_dict(row)
         res = scoring.score_vacancy(v, settings.profile, settings)
         storage.save_score(conn, v["id"], res["score"], res["verdict"], res["reasons"],
@@ -182,10 +199,12 @@ def make_letter_for(conn, settings, vacancy_id):
     return text, model, False
 
 
-def make_letters(conn, settings, limit=50, force=False, on_item=None):
+def make_letters(conn, settings, limit=50, force=False, on_item=None, should_stop=None):
     """Генерирует письма пачкой. Возвращает количество созданных."""
     made = 0
     for row in letter_vacancies(conn, limit=limit, force=force):
+        if should_stop and should_stop():
+            break
         v = vacancy_dict(row)
         text, model = letters_mod.make_letter(v, settings.profile, settings)
         storage.save_letter(conn, v["id"], text, model, commit=False)

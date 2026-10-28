@@ -144,7 +144,7 @@ class CollectQueriesTest(JobsBase):
         self.assertIn("collect_error", kinds)
 
     def test_duplicates_between_queries_are_reported(self):
-        """12 записей при 10 уникальных: в отчёте видно, куда делись два». """
+        """12 записей при 10 уникальных: в отчёте видно, куда делись два."""
         def run(query, **kwargs):
             ids = ["1", "2", "3"] if query == "a" else ["2", "3", "4"]
             items = [sample_vacancy(id=vid) for vid in ids]
@@ -157,6 +157,28 @@ class CollectQueriesTest(JobsBase):
         self.assertEqual(saved, 6)
         self.assertEqual(self.count("vacancies"), 4)
         self.assertTrue(any("уникальных вакансий: 4" in note for note in notes))
+
+    def test_stop_flag_halts_collection(self):
+        """Кнопка «Остановить»: после первого запроса сбор прекращается."""
+        calls = []
+
+        def run(query, **kwargs):
+            calls.append(query)
+            items = [sample_vacancy(id="%s-1" % query)]
+            return items, {"source": "html", "fallback": False, "reason": "",
+                           "found": 1, "taken": 1, "errors": []}
+
+        with mock.patch.object(collector, "collect", run):
+            saved, found, _source, notes = jobs.collect_queries(
+                self.conn, ["a", "b", "c"], settings(),
+                should_stop=lambda: len(calls) >= 2)
+        # «Стоп» срабатывает между карточками: первый запрос сохранён, второй прерван на первой же
+        # карточке, третий уже не начинался
+        self.assertEqual(calls, ["a", "b"])
+        self.assertEqual(saved, 1)
+        self.assertEqual(found, 2)
+        self.assertIn("остановлено пользователем: сохранено 1 из 2 найденных", notes[0])
+        self.assertEqual(self.count("vacancies"), 1)   # сохранённое осталось
 
 
 class LettersTest(JobsBase):
