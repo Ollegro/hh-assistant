@@ -54,6 +54,7 @@ def collect_queries(conn, queries, settings, limit=None, pages=None, on_item=Non
     saved = found = skipped = 0
     source = "html"
     notes = []
+    saved_ids = set()
     for query in queries:
         left = total_limit - saved if total_limit else 0
         if total_limit and left <= 0:
@@ -85,12 +86,18 @@ def collect_queries(conn, queries, settings, limit=None, pages=None, on_item=Non
                 break
             storage.upsert_vacancy(conn, v, commit=False)
             saved += 1
+            saved_ids.add(str(v.get("id")))
             _commit_progress(conn, saved)
             if on_item:
                 on_item(v)
     conn.commit()
     if skipped:
         notes.append("уже в базе, повторно не скачивали: %d" % skipped)
+    unique = len(saved_ids)
+    if unique and unique != saved:
+        # Одна вакансия может прийти по двум запросам: записей больше, чем вакансий.
+        notes.append("уникальных вакансий: %d (повторов между запросами: %d)"
+                     % (unique, saved - unique))
     return saved, found, source, notes
 
 

@@ -14,7 +14,7 @@ import traceback
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import areas, guide, jobs, llm, queue, resume, storage, web_sessions, vacancy_filters
+from . import areas, guide, jobs, llm, queue, resume, scoring, storage, web_sessions, vacancy_filters
 from .config import BASE, get_settings, load_profile
 
 CSS = """
@@ -55,6 +55,11 @@ box-shadow:0 2px 8px rgba(84,52,140,.08);transition:transform .12s ease,box-shad
 .btn.primary{background:linear-gradient(135deg,#3b82f6,#1d4ed8);border-color:transparent;color:#fff}
 .btn.danger{background:linear-gradient(135deg,#ef5350,#b71c1c);border-color:transparent;color:#fff}
 .btn.danger:hover{box-shadow:0 6px 16px rgba(183,28,28,.28)}
+.btn.success{background:linear-gradient(135deg,#34d399,#059669);border-color:transparent;color:#fff}
+.btn.success:hover{box-shadow:0 6px 16px rgba(5,150,105,.28)}
+.letter-dot{display:inline-block;width:13px;height:13px;border-radius:50%;background:#16a34a;
+ box-shadow:0 0 0 3px rgba(22,163,74,.16);vertical-align:middle}
+td.vid{color:#5d5470;font-size:12.5px;white-space:nowrap}
 select{height:36px;padding:0 10px;border-radius:10px;border:1px solid rgba(120,90,170,.25);
 background:rgba(255,255,255,.92);color:#3a2d52;font-size:13px;font-family:inherit;line-height:1;
 max-width:100%}
@@ -246,12 +251,41 @@ def fmt_salary(row):
 
 
 def score_class(score):
-    score = score or 0
-    if score >= 70:
+    """Цвет оценки: школьные 5 и 4 — зелёный, 3 — жёлтый, 2 и 1 — красный."""
+    grade = scoring.school_grade(score)
+    if grade is None:
+        return "s-low"
+    if grade >= 4:
         return "s-high"
-    if score >= 50:
+    if grade == 3:
         return "s-mid"
     return "s-low"
+
+
+def grade_cell(row):
+    """Оценка как в школе: крупная цифра 1–5, в подсказке — исходный балл 0–100."""
+    grade = scoring.school_grade(row["score"])
+    if grade is None:
+        return "<span class='score s-low' title='вакансия ещё не оценена'>—</span>"
+    return ("<span class='score %s' title='%d из 100 баллов'>%d</span>" % (
+        score_class(row["score"]), row["score"], grade))
+
+
+def letter_cell(row):
+    """Письмо готово? Зелёный кружок, если текст есть (сгенерирован или написан вручную).
+
+    Если письма нет, ячейка остаётся пустой — как просил заказчик; при наведении
+    на кружок видно, сгенерировано письмо или отредактировано руками.
+    """
+    try:
+        has_letter = row["has_letter"]
+        edited = row["letter_edited"]
+    except (IndexError, KeyError):
+        has_letter, edited = 0, 0
+    if not has_letter:
+        return ""
+    kind = "написано вручную" if edited else "сгенерировано"
+    return "<span class='letter-dot' title='письмо %s'></span>" % kind
 
 
 def verdict_badge(verdict):
@@ -402,7 +436,7 @@ def render_index(conn, limit, msg="", region="", filters=None, page=1):
         _action_form("/run/letters", "Сгенерировать письма", "",
                      region_value, hidden_filters),
         "<a class='btn' href='/export'>Экспорт писем в файлы</a>",
-        "<a class='btn' href='/help'>Руководство</a>",
+        "<a class='btn success' href='/help'>Руководство</a>",
         "<a class='btn danger' href='/profile'>Профиль соискателя</a>",
         _action_form("/reset", "Очистить базу", " danger", region_value,
                      hidden_filters, confirm=True, title=confirm_text,
@@ -459,9 +493,9 @@ def render_index(conn, limit, msg="", region="", filters=None, page=1):
                  ".filter-values{max-height:220px;overflow:auto;margin:8px 0}"
                  ".filter-values label{display:block;font-weight:400;padding:4px}"
                  ".filter-menu input[type=search]{width:100%;padding:7px}</style>")
-    parts.append("<table><thead><tr>")
+    parts.append("<table><thead><tr><th>ID</th>")
     # Значения всех колонок считаем за один проход по строкам (options_all),
-    # а не пересчитываем меню семь раз подряд.
+    # а не пересчитываем меню по разу на колонку.
     menu = vacancy_filters.options_all(all_rows, filters)
     for col, title in vacancy_filters.COLUMNS:
         active = " (%d)" % len(filters[col]) if filters[col] else ""
@@ -484,17 +518,18 @@ def render_index(conn, limit, msg="", region="", filters=None, page=1):
     parts.append("<th></th></tr></thead><tbody>")
     for r in rows:
         parts.append(
-            "<tr><td class='rate'><span class='score %s'>%s</span>%s</td>"
+            "<tr><td class='vid' title='id вакансии на hh.ru'>%s</td>"
+            "<td class='rate'>%s%s</td>"
             "<td>%s</td><td>%s</td><td>%s</td><td>%s</td>"
-            "<td>%s</td><td>%s</td><td><a class='btn' target='_blank' rel='noopener'"
+            "<td>%s</td><td>%s</td><td class='letter'>%s</td>"
+            "<td><a class='btn' target='_blank' rel='noopener'"
             " href='/v/%s'>открыть</a></td></tr>" % (
-                score_class(r["score"]), r["score"] if r["score"] is not None else "—",
-                verdict_badge(r["verdict"]),
+                esc(r["id"]), grade_cell(r), verdict_badge(r["verdict"]),
                 esc(r["title"]), esc(r["company"]), esc(r["area"] or r["region"]),
                 esc(r["work_format"]), esc(r["experience"]),
-                fmt_salary(r), esc(r["id"])))
+                fmt_salary(r), letter_cell(r), esc(r["id"])))
     if not rows:
-        parts.append("<tr><td colspan='8'>Ни одной вакансии по фильтру. Соберите вакансии "
+        parts.append("<tr><td colspan='10'>Ни одной вакансии по фильтру. Соберите вакансии "
                      "кнопкой выше, затем нажмите «Оценить».</td></tr>")
     parts.append("</tbody></table><div class='actions'>")
     query = {"region": region_value}
@@ -637,10 +672,13 @@ def _queries_block():
                  % (min(s.collect_queries, len(items)), s.collect_queries))
     return (
         "<div class='card'><div class='meta'><b>Поисковые запросы для сбора</b> — "
-        "по одному в строке, строки с # игнорируются</div>"
+        "по одному в строке, строки с # игнорируются. Правки в списке начинают "
+        "действовать только после кнопки «Сохранить запросы»: она записывает их в "
+        "config/queries.txt, откуда их берёт сбор.</div>"
         "<form method='post' action='/queries'>"
         "<textarea class='queries-text' name='queries'>%s</textarea>"
-        "<div class='actions'><button class='btn primary' type='submit'>"
+        "<div class='actions'><button class='btn primary' type='submit'"
+        " title='записать список в config/queries.txt — из него берутся запросы для сбора'>"
         "Сохранить запросы</button><span class='meta'>%s</span></div></form></div>"
         % (esc(text), note))
 
@@ -1076,6 +1114,9 @@ def render_card(conn, vacancy_id, msg="", show_rules=False):
     else:
         reasons_html = "<div class='reasons'>причин нет — нажмите «Переоценить вакансию»</div>"
     from . import matching
+    grade = scoring.school_grade(row["score"])
+    grade_line = ("%d из 5 (%d из 100 баллов)" % (grade, row["score"])
+                  if grade else "нет оценки")
     match_line = matching.explain(dict(row), get_settings().profile) or "нет данных"
     last = storage.latest_application(conn, vacancy_id)
     kind = storage.status_kind(last["status"]) if last else ""
@@ -1104,19 +1145,18 @@ def render_card(conn, vacancy_id, msg="", show_rules=False):
             esc(row["title"]), esc(row["work_format"] or "формат не указан"),
             esc(row["experience"] or "—"),
             fmt_salary(row), score_class(row["score"]),
-            row["score"] if row["score"] is not None else "—",
+            grade_line,
             verdict_badge(row["verdict"]), reasons_html,
             ("<div class='meta'><b>Что подчеркнуть в письме:</b> %s</div>" % esc(focus_text))
             if focus_text else ""),
         "<div class='card'><div class='reasons'><b>Сопоставление с профилем:</b> %s</div></div>" % esc(match_line),
-        "<div class='card'><div class='meta'><b>Письмо и оценка</b> — действия только для этой вакансии</div>"
+        "<div class='card'><div class='meta'><b>Оценка</b> — пересчитать балл этой вакансии "
+        "(правила + LLM) и показать правила</div>"
         "<div class='actions'>"
-        "<form method='post' action='/run/letters/%s' style='display:inline'>"
-        "<button class='btn primary' type='submit'>Сгенерировать письмо</button></form>"
         "<form method='post' action='/run/score/%s' style='display:inline'>"
         "<button class='btn' type='submit' title='пересчитать балл этой вакансии "
         "(правила + LLM) и показать правила оценки'>Переоценить вакансию</button></form>"
-        "</div></div>" % (esc(row["id"]), esc(row["id"])),
+        "</div></div>" % esc(row["id"]),
         "<div class='card'><div class='reasons'><b>Статус отклика:</b> %s</div>"
         "<div class='actions'>"
         "<form method='post' action='/status/%s' style='display:inline'>"
@@ -1139,10 +1179,14 @@ def render_card(conn, vacancy_id, msg="", show_rules=False):
         "<button class='btn' type='submit'>Пропустить</button></form>" % esc(row["id"]),
         "<a class='btn' href='/letter/%s'>Скачать .txt</a>" % esc(row["id"]),
         "</div>",
-        "<form method='post' action='/letter/%s'>"
-        "<textarea id='letter' name='text'>%s</textarea>"
-        "<div class='actions'><button class='btn primary' type='submit'>Сохранить письмо</button>"
-        "<span class='meta'>%s</span></div></form>" % (esc(row["id"]), esc(letter), esc(note)),
+        "<form method='post' action='/letter/%s' id='letter-save'>"
+        "<textarea id='letter' name='text'>%s</textarea></form>"
+        "<div class='actions'>"
+        "<form method='post' action='/run/letters/%s' style='display:inline'>"
+        "<button class='btn primary' type='submit'>Сгенерировать письмо</button></form>"
+        "<button class='btn primary' type='submit' form='letter-save'>Сохранить письмо</button>"
+        "<span class='meta'>%s</span></div>" % (
+            esc(row["id"]), esc(letter), esc(row["id"]), esc(note)),
         "<div class='card' style='margin-top:14px'><div class='meta'><b>Описание вакансии</b>"
         " · <a href='%s' target='_blank' rel='noopener'>полный текст на hh</a></div>"
         "<div class='desc'>%s</div></div>" % (esc(row["url"]), esc(row["description"])),

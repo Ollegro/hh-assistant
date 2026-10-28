@@ -46,9 +46,13 @@ def next_batch(conn, limit=50, only_new=True, cooldown_days=None, region=""):
     sql = """SELECT v.id, v.title, v.company, v.url, v.work_format, v.experience,
                     v.area, v.region, v.salary_from, v.salary_to, v.currency,
                     s.score, s.verdict, s.reasons,
+                    CASE WHEN l.text IS NOT NULL AND TRIM(l.text) <> '' THEN 1 ELSE 0 END
+                        AS has_letter,
+                    COALESCE(l.edited, 0) AS letter_edited,
                     COALESCE(a.applied, 0) AS applied
              FROM vacancies v
              LEFT JOIN scores s ON s.vacancy_id = v.id
+             LEFT JOIN letters l ON l.vacancy_id = v.id
              LEFT JOIN (SELECT vacancy_id, COUNT(*) AS applied FROM applications
                         GROUP BY vacancy_id) a ON a.vacancy_id = v.id
              WHERE 1 = 1"""

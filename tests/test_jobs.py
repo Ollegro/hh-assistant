@@ -135,10 +135,28 @@ class CollectQueriesTest(JobsBase):
             saved, found, _source, notes = jobs.collect_queries(
                 self.conn, ["a", "b", "c"], settings())
         self.assertEqual((saved, found), (2, 2))
-        self.assertEqual(len(notes), 1)
-        self.assertIn("поиск не удался", notes[0])
+        errors = [note for note in notes if "поиск не удался" in note]
+        self.assertEqual(len(errors), 1)
+        self.assertIn("«b»", errors[0])
+        # одна и та же вакансия пришла по двум запросам — в примечаниях есть про повторы
+        self.assertTrue(any("уникальных вакансий" in note for note in notes))
         kinds = [row["kind"] for row in self.conn.execute("SELECT kind FROM events")]
         self.assertIn("collect_error", kinds)
+
+    def test_duplicates_between_queries_are_reported(self):
+        """12 записей при 10 уникальных: в отчёте видно, куда делись два». """
+        def run(query, **kwargs):
+            ids = ["1", "2", "3"] if query == "a" else ["2", "3", "4"]
+            items = [sample_vacancy(id=vid) for vid in ids]
+            return items, {"source": "html", "fallback": False, "reason": "",
+                           "found": len(items), "taken": len(items), "errors": []}
+
+        with mock.patch.object(collector, "collect", run):
+            saved, _found, _source, notes = jobs.collect_queries(
+                self.conn, ["a", "b"], settings())
+        self.assertEqual(saved, 6)
+        self.assertEqual(self.count("vacancies"), 4)
+        self.assertTrue(any("уникальных вакансий: 4" in note for note in notes))
 
 
 class LettersTest(JobsBase):

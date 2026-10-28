@@ -1,7 +1,9 @@
 """Значения и фильтры колонок списка вакансий, до ограничения страницы."""
+from . import scoring
+
 COLUMNS = (("score", "Оценка"), ("title", "Вакансия"), ("company", "Компания"),
            ("city", "Город"), ("format", "Формат"), ("experience", "Опыт"),
-           ("salary", "Зарплата"))
+           ("salary", "Зарплата"), ("letter", "Письмо"))
 
 
 def salary(row):
@@ -17,7 +19,14 @@ def salary(row):
 
 def value(row, column):
     if column == "score":
-        return str(row["score"]) if row["score"] is not None else "—"
+        grade = scoring.school_grade(row["score"])
+        return str(grade) if grade else "—"
+    if column == "letter":
+        try:
+            has_letter = row["has_letter"]
+        except (IndexError, KeyError):
+            has_letter = 0
+        return "есть" if has_letter else "нет"
     if column == "city":
         return row["area"] or row["region"] or "—"
     if column == "format":
@@ -37,9 +46,12 @@ def apply(rows, filters):
 
 
 def _sorted_values(column, values):
-    """Порядок значений в меню фильтра: оценка по убыванию, остальное по алфавиту."""
+    """Порядок значений в меню фильтра: оценка по убыванию, письмо — «есть» первым."""
     if column == "score":
         return sorted(values, key=lambda v: (v == "—", -int(v) if v.isdigit() else 0))
+    if column == "letter":
+        order = {"есть": 0, "нет": 1}
+        return sorted(values, key=lambda v: order.get(v, 2))
     return sorted(values, key=lambda v: v.casefold().replace("ё", "е"))
 
 

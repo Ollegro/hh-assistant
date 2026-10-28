@@ -33,6 +33,24 @@ RULE_WEIGHTS = (
 )
 
 
+# Школьная шкала для интерфейса: балл 0–100 показываем как оценку 1–5.
+GRADE_BOUNDS = ((80, 5), (60, 4), (40, 3), (20, 2), (0, 1))
+
+
+def school_grade(score):
+    """Балл 0–100 -> школьная оценка 1–5. None (не оценено) -> None.
+
+    5 — 80+, 4 — 60–79, 3 — 40–59, 2 — 20–39, 1 — меньше 20. Порог вердикта
+    («откликаться / не откликаться») остаётся в баллах, шкала — только для показа.
+    """
+    if score is None:
+        return None
+    for low, grade in GRADE_BOUNDS:
+        if score >= low:
+            return grade
+    return 1
+
+
 def _text(v):
     return " ".join([
         v.get("title", ""),
