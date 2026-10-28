@@ -108,5 +108,36 @@ class CardLetterButtonsTest(Base):
         self.assertNotIn("из 100", page)
 
 
+class CardHeaderTest(Base):
+    """Компания — часть названия вакансии, а не «шапка» страницы."""
+
+    def card(self, company="Спецобъединение Юго-Запад"):
+        self.scored("136935354", score=54, verdict="условно",
+                    title="Специалист по внедрению ИИ / AI Specialist / AI-тренер",
+                    company=company)
+        return web.render_card(self.conn, "136935354")
+
+    def test_company_is_next_to_the_title(self):
+        page = self.card()
+        self.assertIn("<b>Специалист по внедрению ИИ / AI Specialist / AI-тренер</b>"
+                      " <span class='card-company'>· Спецобъединение Юго-Запад</span>", page)
+
+    def test_company_is_not_in_the_header(self):
+        page = self.card()
+        header = page.split("<header>", 1)[1].split("</header>", 1)[0]
+        self.assertNotIn("Спецобъединение Юго-Запад", header)
+        self.assertIn("к списку", header)
+
+    def test_browser_tab_title_has_title_and_company(self):
+        page = self.card()
+        self.assertIn("<title>Специалист по внедрению ИИ / AI Specialist / AI-тренер — "
+                      "Спецобъединение Юго-Запад</title>", page)
+
+    def test_empty_company_does_not_break_the_line(self):
+        page = self.card(company="")
+        self.assertIn("<b>Специалист по внедрению ИИ / AI Specialist / AI-тренер</b> ·", page)
+        self.assertNotIn("<span class='card-company'>", page)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -59,6 +59,7 @@ box-shadow:0 2px 8px rgba(84,52,140,.08);transition:transform .12s ease,box-shad
 .btn.success:hover{box-shadow:0 6px 16px rgba(5,150,105,.28)}
 .letter-dot{display:inline-block;width:13px;height:13px;border-radius:50%;background:#16a34a;
  box-shadow:0 0 0 3px rgba(22,163,74,.16);vertical-align:middle}
+.card-company{color:#5d5470}
 td.vid{color:#5d5470;font-size:12.5px;white-space:nowrap}
 select{height:36px;padding:0 10px;border-radius:10px;border:1px solid rgba(120,90,170,.25);
 background:rgba(255,255,255,.92);color:#3a2d52;font-size:13px;font-family:inherit;line-height:1;
@@ -1133,18 +1134,22 @@ def render_card(conn, vacancy_id, msg="", show_rules=False):
         "<html><head><meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width, initial-scale=1'>"
         + ("<meta http-equiv='refresh' content='5'>" if RUN["running"] else "") +
-        "<title>%s</title><style>%s</style></head><body>" % (esc(row["title"]), CSS),
-        "<header><b><a href='/'>← к списку</a></b><span>%s</span></header><main>" % esc(row["company"]),
+        "<title>%s — %s</title><style>%s</style></head><body>" % (
+            esc(row["title"]), esc(row["company"] or "hh.ru"), CSS),
+        "<header><b><a href='/'>← к списку</a></b><span>карточка вакансии</span></header><main>",
         ("<div class='card'>%s</div>" % esc(msg)) if msg else "",
         ("<div class='meta'>%s</div>" % esc(run_progress())) if run_progress() else "",
         run_indicator(),
-        "<div class='card'><div class='meta'><b>%s</b> · %s · опыт: %s · зарплата: %s · "
+        "<div class='card'><div class='meta'><b>%s</b>%s · %s · опыт: %s · зарплата: %s · "
         "<span class='score %s'>оценка %s</span> %s</div>"
         "<div class='meta'>Почему такая оценка:</div>%s%s"
         "<div class='actions'>"
         "<button class='btn' type='button' onclick=\"document.getElementById('rules').showModal()\">"
         "Правила оценки</button></div></div>" % (
-            esc(row["title"]), esc(row["work_format"] or "формат не указан"),
+            esc(row["title"]),
+            (" <span class='card-company'>· %s</span>" % esc(row["company"]))
+            if row["company"] else "",
+            esc(row["work_format"] or "формат не указан"),
             esc(row["experience"] or "—"),
             fmt_salary(row), score_class(row["score"]),
             grade_line,
