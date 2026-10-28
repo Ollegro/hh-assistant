@@ -263,12 +263,12 @@ def score_class(score):
 
 
 def grade_cell(row):
-    """Оценка как в школе: крупная цифра 1–5, в подсказке — исходный балл 0–100."""
+    """Оценка как в школе: крупная цифра 1–5 (внутренние баллы наружу не выводим)."""
     grade = scoring.school_grade(row["score"])
     if grade is None:
         return "<span class='score s-low' title='вакансия ещё не оценена'>—</span>"
-    return ("<span class='score %s' title='%d из 100 баллов'>%d</span>" % (
-        score_class(row["score"]), row["score"], grade))
+    return ("<span class='score %s' title='оценка %d из 5'>%d</span>" % (
+        score_class(row["score"]), grade, grade))
 
 
 def letter_cell(row):
@@ -999,7 +999,8 @@ def _run_action(kind, conn, limit=None, area=None, vacancy_id="", on_item=None):
             score, verdict = res
             storage.log_event(conn, "score_one", {"vacancy_id": vacancy_id, "score": score,
                                                   "from": "web"})
-            return "вакансия %s: балл %d (%s)" % (vacancy_id, score, verdict)
+            return "вакансия %s: оценка %s из 5 (%s)" % (
+                vacancy_id, scoring.school_grade(score), verdict)
         done, total = jobs.score_pending(conn, s, on_item=tick)
         storage.log_event(conn, "score", {"count": done, "model": s.llm_model or "rules",
                                           "from": "web"})
@@ -1070,29 +1071,31 @@ def rules_dialog(row, show_rules=False):
         for title, points, note in scoring.RULE_WEIGHTS)
     parts = []
     if row["rule_score"] is not None:
-        parts.append("правила: <b>%d</b>" % row["rule_score"])
+        parts.append("правила: <b>%s</b> из 5" % scoring.school_grade(row["rule_score"]))
     if row["llm_score"] is not None:
-        parts.append("LLM: <b>%d</b>" % row["llm_score"])
+        parts.append("LLM: <b>%s</b> из 5" % scoring.school_grade(row["llm_score"]))
     shares = " · ".join(parts) or "составляющие не сохранены (оценка сделана раньше)"
     reasons, focus = score_parts(row["reasons"])
     items = "".join("<li>%s</li>" % esc(item) for item in reasons)
     items = ("<ul class='rules-list'>%s</ul>" % items) if items else "<div class='meta'>причин нет</div>"
     focus_block = ("<div class='meta'><b>Что подчеркнуть в письме:</b> %s</div>" % esc(focus)) \
         if focus else ""
+    grade = scoring.school_grade(row["score"])
     return (
         "<dialog id='rules' data-open='%d'>"
         "<h3>Как считается оценка вакансии</h3>"
-        "<div class='meta'>Итоговый балл = %d%% правила + %d%% оценка LLM. "
-        "Ориентир при выборе — сам балл и вердикт.</div>"
-        "<table><tr><th>Правило</th><th>Баллы</th><th>Когда срабатывает</th></tr>%s</table>"
-        "<div class='meta'>Результат этой вакансии: %s · итог <b>%s</b> · вердикт <b>%s</b></div>"
+        "<div class='meta'>Оценка как в школе, от 1 до 5: 5 — полностью подходит, "
+        "4 — подходит, 3 — условно, 2 — слабо, 1 — не подходит. Считается по правилам "
+        "профиля и, если настроен ключ LLM, по оценке модели.</div>"
+        "<table><tr><th>Правило</th><th>Вклад</th><th>Когда срабатывает</th></tr>%s</table>"
+        "<div class='meta'>Результат этой вакансии: %s · оценка <b>%s</b> из 5 · "
+        "вердикт <b>%s</b></div>"
         "%s%s"
         "<div class='actions'><form method='dialog'>"
         "<button class='btn primary' type='submit'>Понятно</button></form></div>"
         "</dialog>" % (
-            1 if show_rules else 0, int(scoring.RULE_WEIGHT * 100),
-            int(scoring.LLM_WEIGHT * 100), rules, shares,
-            row["score"] if row["score"] is not None else "—",
+            1 if show_rules else 0, rules, shares,
+            grade if grade else "—",
             esc(row["verdict"] or "нет"), items, focus_block))
 
 
@@ -1115,8 +1118,7 @@ def render_card(conn, vacancy_id, msg="", show_rules=False):
         reasons_html = "<div class='reasons'>причин нет — нажмите «Переоценить вакансию»</div>"
     from . import matching
     grade = scoring.school_grade(row["score"])
-    grade_line = ("%d из 5 (%d из 100 баллов)" % (grade, row["score"])
-                  if grade else "нет оценки")
+    grade_line = ("%d из 5" % grade) if grade else "нет оценки"
     match_line = matching.explain(dict(row), get_settings().profile) or "нет данных"
     last = storage.latest_application(conn, vacancy_id)
     kind = storage.status_kind(last["status"]) if last else ""
@@ -1138,7 +1140,7 @@ def render_card(conn, vacancy_id, msg="", show_rules=False):
         run_indicator(),
         "<div class='card'><div class='meta'><b>%s</b> · %s · опыт: %s · зарплата: %s · "
         "<span class='score %s'>оценка %s</span> %s</div>"
-        "<div class='meta'>Почему такой балл:</div>%s%s"
+        "<div class='meta'>Почему такая оценка:</div>%s%s"
         "<div class='actions'>"
         "<button class='btn' type='button' onclick=\"document.getElementById('rules').showModal()\">"
         "Правила оценки</button></div></div>" % (
@@ -1150,11 +1152,11 @@ def render_card(conn, vacancy_id, msg="", show_rules=False):
             ("<div class='meta'><b>Что подчеркнуть в письме:</b> %s</div>" % esc(focus_text))
             if focus_text else ""),
         "<div class='card'><div class='reasons'><b>Сопоставление с профилем:</b> %s</div></div>" % esc(match_line),
-        "<div class='card'><div class='meta'><b>Оценка</b> — пересчитать балл этой вакансии "
+        "<div class='card'><div class='meta'><b>Оценка</b> — пересчитать оценку этой вакансии "
         "(правила + LLM) и показать правила</div>"
         "<div class='actions'>"
         "<form method='post' action='/run/score/%s' style='display:inline'>"
-        "<button class='btn' type='submit' title='пересчитать балл этой вакансии "
+        "<button class='btn' type='submit' title='пересчитать оценку этой вакансии "
         "(правила + LLM) и показать правила оценки'>Переоценить вакансию</button></form>"
         "</div></div>" % esc(row["id"]),
         "<div class='card'><div class='reasons'><b>Статус отклика:</b> %s</div>"

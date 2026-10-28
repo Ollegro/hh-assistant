@@ -52,9 +52,10 @@ class TableColumnsTest(Base):
 
     def test_score_is_shown_as_school_grade(self):
         page = self.page()
-        self.assertIn("<span class='score s-high' title='92 из 100 баллов'>5</span>", page)
-        self.assertIn("<span class='score s-mid' title='47 из 100 баллов'>3</span>", page)
-        self.assertNotIn(">92<", page)          # сырой балл в таблице больше не печатается
+        self.assertIn("<span class='score s-high' title='оценка 5 из 5'>5</span>", page)
+        self.assertIn("<span class='score s-mid' title='оценка 3 из 5'>3</span>", page)
+        self.assertNotIn(">92<", page)          # сырой балл в таблице не печатается
+        self.assertNotIn("из 100", page)        # 100-балльная шкала убрана из интерфейса
 
     def test_letter_column_on_the_right(self):
         page = self.page()
@@ -101,8 +102,10 @@ class CardLetterButtonsTest(Base):
         self.assertIn("id='letter-save'", page)
         self.assertIn("form='letter-save'", page)
 
-    def test_card_shows_grade_and_points(self):
-        self.assertIn("оценка 5 из 5 (92 из 100 баллов)", self.card())
+    def test_card_shows_grade_only(self):
+        page = self.card()
+        self.assertIn("оценка 5 из 5", page)
+        self.assertNotIn("из 100", page)
 
 
 if __name__ == "__main__":

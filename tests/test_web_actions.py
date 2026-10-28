@@ -316,7 +316,9 @@ class SingleVacancyActionTest(WebBase):
     def test_score_one_scores_only_target(self):
         self.add()
         report = web.run_action("score", self.conn, vacancy_id="1")
-        self.assertIn("балл", report)
+        self.assertIn("оценка", report)
+        self.assertIn("из 5", report)
+        self.assertNotIn("из 100", report)
         rows = {row["vacancy_id"] for row in self.conn.execute("SELECT vacancy_id FROM scores")}
         self.assertEqual(rows, {"1"})
 

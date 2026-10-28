@@ -113,12 +113,14 @@ class RulesDialogTest(Base):
     def test_rules_and_shares(self):
         page = self.add(score=90, verdict="откликаться", rule_score=80, llm_score=95)
         self.assertIn("<dialog id='rules'", page)
-        self.assertIn("45% правила", page)
-        self.assertIn("55% оценка LLM", page)
-        self.assertIn("правила: <b>80</b>", page)
-        self.assertIn("LLM: <b>95</b>", page)
-        self.assertIn("итог <b>90</b>", page)
+        self.assertIn("Оценка как в школе, от 1 до 5", page)
+        self.assertIn("правила: <b>5</b> из 5", page)
+        self.assertIn("LLM: <b>5</b> из 5", page)
+        self.assertIn("оценка <b>5</b> из 5", page)
         self.assertIn("вердикт <b>откликаться</b>", page)
+        # 100-балльная шкала в интерфейсе больше не показывается
+        self.assertNotIn("из 100", page)
+        self.assertNotIn("итог <b>90</b>", page)
 
     def test_all_rule_weights_listed(self):
         page = self.add()
