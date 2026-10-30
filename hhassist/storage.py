@@ -11,48 +11,35 @@ DB_PATH = os.path.join(DATA_DIR, "hhassist.sqlite3")
 
 # Журнал откликов. Каждая смена статуса — новая строка в applications
 # (история сохраняется), текущий статус — последняя по id запись вакансии.
+# Статусов «ответ / приглашение / отказ» больше нет: приложение не отслеживает
+# ответы работодателя (API соискателя закрыт), а вручную их вести владелец не хочет.
 STATUS_READY = "готово к отправке"
 STATUS_SENT = "отправлено вручную"
 STATUS_SKIPPED = "пропущено"
-STATUS_REPLY = "ответ"
-STATUS_INVITE = "приглашение"
-STATUS_REJECT = "отказ"
 
-# Коды статусов: в коде и в аналитике работаем с ними, в журнал пишем подписи.
+# Коды статусов: в коде работаем с ними, в журнал пишем подписи.
 KIND_STATUSES = {
     "ready": (STATUS_READY,),
     "sent": (STATUS_SENT,),
     "skip": (STATUS_SKIPPED,),
-    "reply": (STATUS_REPLY,),
-    "invite": (STATUS_INVITE,),
-    "reject": (STATUS_REJECT,),
 }
 
 KIND_TITLES = {
     "ready": "готово к отправке",
     "sent": "отправлено",
     "skip": "пропущено",
-    "reply": "ответ",
-    "invite": "приглашение",
-    "reject": "отказ",
 }
 
-# Прочитать старые записи журнала и свободный ввод из карточки/CLI.
+# Прочитать старые записи журнала и свободный ввод из CLI.
 STATUS_ALIASES = {label.lower(): kind for kind, labels in KIND_STATUSES.items()
                   for label in labels}
 STATUS_ALIASES.update({
     "готово": "ready",
     "пропуск": "skip",
-    "ответ получен": "reply",
-    "ответ работодателя": "reply",
-    "приглашение на собеседование": "invite",
-    "отказ работодателя": "reject",
 })
 
 # Отправленные отклики: в этих статусах вакансия уже ушла работодателю.
-SENT_KINDS = ("sent", "reply", "invite", "reject")
-# Ответы работодателя (приглашение и отказ — тоже ответ).
-REPLY_KINDS = ("reply", "invite", "reject")
+SENT_KINDS = ("sent",)
 
 
 def status_kind(status):
@@ -502,8 +489,6 @@ def stats(conn):
         "sent_today": sent_today(conn),
         "high_score": q("SELECT COUNT(*) FROM scores WHERE score >= 70"),
         "sent": count_vacancies_with(conn, SENT_KINDS),
-        "replied": count_vacancies_with(conn, REPLY_KINDS),
-        "invited": count_vacancies_with(conn, ("invite",)),
     }
 
 

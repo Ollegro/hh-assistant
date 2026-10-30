@@ -460,10 +460,10 @@ def render_index(conn, limit, msg="", region="", filters=None, page=1):
         + ("<meta http-equiv='refresh' content='5'>" if RUN["running"] else "") +
         "<title>hh-assistant</title><style>%s</style></head><body>" % CSS,
         "<header>%s<b>hh-assistant</b><span>вакансий: %d · оценено: %d · писем: %d · "
-        "откликов: %d · ответов: %d · сегодня: %d · остаток лимита: %d</span>"
+        "откликов: %d · сегодня: %d · остаток лимита: %d</span>"
         "<span>%s</span></header><main>" % (
             notice,
-            st["vacancies"], st["scored"], st["letters"], st["applications"], st["replied"],
+            st["vacancies"], st["scored"], st["letters"], st["applications"],
             st["sent_today"], left, esc(llm.describe(get_settings()))),
         toolbar,
         _queries_block(),
@@ -611,7 +611,7 @@ def balance_box():
 
 
 def apply_status(conn, vacancy_id, kind, note=""):
-    """Смена статуса отклика из карточки. Возвращает текст отчёта для интерфейса."""
+    """Смена статуса отклика (отправлено / пропущено). Возвращает отчёт для интерфейса."""
     code = queue.kind_of(kind)
     if not code:
         return "неизвестный статус: %s (доступны: %s)" % (
@@ -1225,15 +1225,6 @@ def render_card(conn, vacancy_id, msg="", show_rules=False):
     grade = scoring.school_grade(row["score"])
     grade_line = ("%d из 5" % grade) if grade else "нет оценки"
     match_line = matching.explain(dict(row), get_settings().profile) or "нет данных"
-    last = storage.latest_application(conn, vacancy_id)
-    kind = storage.status_kind(last["status"]) if last else ""
-    if kind:
-        status_line = "%s · %s" % (storage.KIND_TITLES.get(kind, last["status"]),
-                                   (last["sent_at"] or "")[:16].replace("T", " "))
-        if last["note"]:
-            status_line += " · " + last["note"]
-    else:
-        status_line = "ещё не отмечен"
     parts = [
         "<html><head><meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width, initial-scale=1'>"
@@ -1268,18 +1259,6 @@ def render_card(conn, vacancy_id, msg="", show_rules=False):
         "<button class='btn' type='submit' title='пересчитать оценку этой вакансии "
         "(правила + LLM) и показать правила оценки'>Переоценить вакансию</button></form>"
         "</div></div>" % esc(row["id"]),
-        "<div class='card'><div class='reasons'><b>Статус отклика:</b> %s</div>"
-        "<div class='actions'>"
-        "<form method='post' action='/status/%s' style='display:inline'>"
-        "<input type='hidden' name='kind' value='reply'>"
-        "<button class='btn' type='submit'>Ответили</button></form>"
-        "<form method='post' action='/status/%s' style='display:inline'>"
-        "<input type='hidden' name='kind' value='invite'>"
-        "<button class='btn' type='submit'>Приглашение</button></form>"
-        "<form method='post' action='/status/%s' style='display:inline'>"
-        "<input type='hidden' name='kind' value='reject'>"
-        "<button class='btn' type='submit'>Отказ</button></form>"
-        "</div></div>" % (esc(status_line), esc(row["id"]), esc(row["id"]), esc(row["id"])),
         "<div class='actions'>",
         "<button class='btn' onclick=\"navigator.clipboard.writeText(document.getElementById('letter').value);"
         "this.textContent='Скопировано'\">Скопировать письмо</button>",
@@ -1677,13 +1656,6 @@ class Handler(BaseHTTPRequestHandler):
             elif path.startswith("/skip/"):
                 queue.skip(conn, path.split("/")[2])
                 self._redirect("/")
-            elif path.startswith("/status/"):
-                vacancy_id = path.split("/")[2]
-                form = self._form()
-                report = apply_status(conn, vacancy_id, (form.get("kind") or [""])[0],
-                                      (form.get("note") or [""])[0])
-                self._redirect("/v/%s?msg=%s" % (urllib.parse.quote(vacancy_id),
-                                                 urllib.parse.quote(report)))
             elif path.startswith("/letter/"):
                 vacancy_id = path.split("/")[2]
                 text = (self._form().get("text") or [""])[0]

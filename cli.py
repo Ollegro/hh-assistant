@@ -197,7 +197,7 @@ def cmd_export(args):
 
 
 def cmd_mark(args):
-    """Ручная смена статуса: отправлено / ответ / приглашение / отказ / пропущено."""
+    """Ручная смена статуса: отправлено / пропущено."""
     conn = storage.connect()
     code = queue.kind_of(args.status)
     if not code:
@@ -323,7 +323,7 @@ def main(argv=None):
     p = sub.add_parser("mark", help="сменить статус отклика вручную")
     p.add_argument("id", help="id вакансии (см. list)")
     p.add_argument("--status", required=True,
-                   help="sent | reply | invite | reject | skip (можно по-русски: «ответ», «приглашение»)")
+                   help="sent | skip (можно по-русски: «отправлено», «пропущено»)")
     p.add_argument("--note", default="", help="примечание к записи журнала")
     p.set_defaults(func=cmd_mark)
 

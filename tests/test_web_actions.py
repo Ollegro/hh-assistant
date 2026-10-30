@@ -279,7 +279,7 @@ class QueriesEditorTest(WebBase):
 
 
 class StatusActionTest(WebBase):
-    """Карточка вакансии: статусы отклика и страница «Воронка»."""
+    """Карточка вакансии: статусы «отправлено / пропущено» (ответы работодателя не ведём)."""
 
     def add(self, vid="1", letter=True):
         storage.upsert_vacancy(self.conn, sample_vacancy(id=vid))
@@ -288,9 +288,9 @@ class StatusActionTest(WebBase):
 
     def test_apply_status_writes_journal(self):
         self.add()
-        self.assertEqual(web.apply_status(self.conn, "1", "приглашение"), "статус: приглашение")
+        self.assertEqual(web.apply_status(self.conn, "1", "пропущено"), "статус: пропущено")
         row = storage.latest_application(self.conn, "1")
-        self.assertEqual(storage.status_kind(row["status"]), "invite")
+        self.assertEqual(storage.status_kind(row["status"]), "skip")
         self.assertEqual(self.stored("applications"), 1)
 
     def test_unknown_status_reported_and_nothing_written(self):
@@ -299,20 +299,14 @@ class StatusActionTest(WebBase):
         self.assertIsNone(storage.latest_application(self.conn, "1"))
 
     def test_missing_vacancy_reported(self):
-        self.assertIn("не найдена", web.apply_status(self.conn, "404", "ответ"))
+        self.assertIn("не найдена", web.apply_status(self.conn, "404", "sent"))
 
-    def test_card_has_status_buttons(self):
+    def test_card_has_no_reply_buttons(self):
+        """Кнопок «Ответили / Приглашение / Отказ» больше нет — и маршрута тоже."""
         self.add()
         page = web.render_card(self.conn, "1")
-        self.assertIn("/status/1", page)
-        self.assertIn("Статус отклика", page)
-        self.assertIn("Приглашение", page)
-
-    def test_card_shows_current_status_and_message(self):
-        self.add()
-        web.apply_status(self.conn, "1", "reject")
-        self.assertIn("отказ", web.render_card(self.conn, "1"))
-        self.assertIn("статус: отказ", web.render_card(self.conn, "1", msg="статус: отказ"))
+        for text in ("Ответили", "Приглашение", "Отказ", "Статус отклика", "/status/1"):
+            self.assertNotIn(text, page)
 
     def test_index_has_no_funnel_button(self):
         """«Воронка» удалена из интерфейса: ни кнопки, ни ссылки."""

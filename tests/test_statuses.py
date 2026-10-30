@@ -20,18 +20,23 @@ from hhassist import csv_export, queue, storage  # noqa: E402
 
 
 class StatusKindTest(unittest.TestCase):
-    """Журнал хранит подписи («ответ»), код работает с кодами («reply»)."""
+    """Журнал хранит подписи («пропущено»), код работает с кодами («skip»).
+
+    Статусов ответа работодателя («ответ / приглашение / отказ») в приложении нет:
+    ответы не отслеживаются, поэтому и статистики по ним не ведётся.
+    """
 
     def test_labels_map_to_kinds(self):
         self.assertEqual(storage.status_kind("отправлено вручную"), "sent")
         self.assertEqual(storage.status_kind("пропущено"), "skip")
-        self.assertEqual(storage.status_kind("ответ"), "reply")
-        self.assertEqual(storage.status_kind("приглашение"), "invite")
-        self.assertEqual(storage.status_kind("отказ"), "reject")
 
-    def test_legacy_and_free_text_aliases(self):
-        self.assertEqual(storage.status_kind(" Приглашение на собеседование "), "invite")
-        self.assertEqual(storage.status_kind("ответ работодателя"), "reply")
+    def test_reply_statuses_are_gone(self):
+        for label in ("ответ", "приглашение", "отказ",
+                      "приглашение на собеседование", "ответ работодателя"):
+            self.assertEqual(storage.status_kind(label), "", label)
+        for kind in ("reply", "invite", "reject"):
+            self.assertNotIn(kind, storage.KIND_STATUSES)
+        self.assertFalse(hasattr(storage, "REPLY_KINDS"))
 
     def test_unknown_status_is_empty(self):
         self.assertEqual(storage.status_kind("телепорт"), "")
@@ -40,14 +45,14 @@ class StatusKindTest(unittest.TestCase):
 
     def test_statuses_for(self):
         self.assertEqual(storage.statuses_for(("sent",)), ("отправлено вручную",))
-        self.assertEqual(storage.statuses_for("reply"), ("ответ",))
-        self.assertEqual(storage.statuses_for(("reply", "invite")), ("ответ", "приглашение"))
+        self.assertEqual(storage.statuses_for("skip"), ("пропущено",))
         self.assertEqual(storage.statuses_for(("нет такого",)), ())
 
     def test_kind_of_accepts_code_and_label(self):
-        self.assertEqual(queue.kind_of("invite"), "invite")
-        self.assertEqual(queue.kind_of("приглашение"), "invite")
+        self.assertEqual(queue.kind_of("skip"), "skip")
+        self.assertEqual(queue.kind_of("пропущено"), "skip")
         self.assertEqual(queue.kind_of(""), "")
+        self.assertEqual(queue.kind_of("приглашение"), "")
 
 
 class Base(unittest.TestCase):
@@ -89,16 +94,17 @@ class JournalTest(Base):
     def test_history_is_kept_and_latest_wins(self):
         self.vacancy("1")
         queue.set_status(self.conn, "1", "sent")
-        queue.set_status(self.conn, "1", "invite", note="собеседование 27.10")
+        queue.set_status(self.conn, "1", "skip", note="не мой стек")
         self.assertEqual(self.count("applications"), 2)
         latest = storage.latest_application(self.conn, "1")
-        self.assertEqual(storage.status_kind(latest["status"]), "invite")
-        self.assertEqual(latest["note"], "собеседование 27.10")
-        self.assertEqual(storage.latest_kinds(self.conn), {"1": "invite"})
+        self.assertEqual(storage.status_kind(latest["status"]), "skip")
+        self.assertEqual(latest["note"], "не мой стек")
+        self.assertEqual(storage.latest_kinds(self.conn), {"1": "skip"})
 
     def test_russian_label_is_accepted(self):
         self.vacancy("1")
-        self.assertEqual(queue.set_status(self.conn, "1", "ответ"), storage.STATUS_REPLY)
+        self.assertEqual(queue.set_status(self.conn, "1", "отправлено вручную"),
+                         storage.STATUS_SENT)
 
     def test_unknown_kind_raises(self):
         with self.assertRaises(ValueError):
@@ -116,12 +122,14 @@ class JournalTest(Base):
         queue.mark_sent(self.conn, "1")
         self.assertEqual(storage.sent_today(self.conn), 1)
 
-    def test_stats_include_responses(self):
+    def test_stats_have_no_response_counters(self):
+        """Статистики по ответам работодателя нет — полей replied/invited тоже."""
         self.vacancy("1", score=90, letter=True)
-        queue.set_status(self.conn, "1", "sent")
-        queue.set_status(self.conn, "1", "reject")
+        queue.mark_sent(self.conn, "1")
         st = storage.stats(self.conn)
-        self.assertEqual((st["sent"], st["replied"], st["invited"]), (1, 1, 0))
+        self.assertEqual(st["sent"], 1)
+        self.assertNotIn("replied", st)
+        self.assertNotIn("invited", st)
 
 
 class CsvTest(Base):
@@ -130,7 +138,7 @@ class CsvTest(Base):
     def test_csv_has_bom_header_and_status(self):
         self.vacancy("1", score=90, letter=True, company="Альфа")
         queue.set_status(self.conn, "1", "sent")
-        queue.set_status(self.conn, "1", "invite", note="созвон 27.10")
+        queue.set_status(self.conn, "1", "skip", note="не мой стек")
         path = os.path.join(self.tmp.name, "out", "vacancies.csv")
         self.assertEqual(csv_export.write_csv(self.conn, path), 1)
         with open(path, "rb") as f:
@@ -138,8 +146,8 @@ class CsvTest(Base):
         self.assertTrue(raw.startswith(b"\xef\xbb\xbf"), "BOM нужен, чтобы Excel понял UTF-8")
         text = raw.decode("utf-8-sig")
         self.assertIn("балл;вердикт", text)
-        self.assertIn("приглашение", text)
-        self.assertIn("созвон 27.10", text)
+        self.assertIn("пропущено", text)
+        self.assertIn("не мой стек", text)
         self.assertEqual(len(text.strip().split("\r\n")), 2)
 
     def test_csv_rows_include_every_vacancy(self):
