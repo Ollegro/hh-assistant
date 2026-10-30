@@ -43,10 +43,15 @@ class HelpContentTest(unittest.TestCase):
             self.assertIn("href='#%s'" % anchor, self.page)
 
     def test_describes_key_actions(self):
-        for text in ("Собрать вакансии", "Оценить", "Сгенерировать письма",
+        for text in ("Собрать вакансии", "Оценить", "Сгенерировать письмо (в карточке)",
                      "Сбросить фильтры", "Очистить базу", "Профиль соискателя",
                      "Применить к профилю"):
             self.assertIn(text, self.page)
+
+    def test_no_bulk_letter_generation(self):
+        """Массовой генерации писем нет: только кнопка в карточке (экономия токенов)."""
+        self.assertNotIn("<tr><td>Сгенерировать письма</td>", self.page)
+        self.assertIn("Массовой генерации нет", self.page)
 
     def test_mentions_limits_and_manual_sending(self):
         self.assertIn("дневной лимит", self.page.lower())

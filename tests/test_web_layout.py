@@ -138,25 +138,27 @@ class ToolbarTest(Base):
         page = web.render_index(self.conn, 10)
         self.assertIn("class='toolbar'", page)
         self.assertLess(page.index("class='toolbar'"), page.index("Собрать вакансии"))
-        for label in ("Собрать вакансии", "Оценить", "Сгенерировать письма",
-                      "Экспорт писем в файлы"):
+        for label in ("Собрать вакансии", "Оценить", "Экспорт писем в файлы"):
             self.assertIn(label, page)
+        # массовой генерации писем нет — только кнопка в карточке
+        self.assertNotIn("Сгенерировать письма", page)
         self.assertNotIn("Воронка", page)  # лишняя функция убрана из панели
-        self.assertEqual(page.count("method='post' action='/run/"), 3)
+        self.assertEqual(page.count("method='post' action='/run/"), 2)
         # регион едет в теле POST-формы, а не через подмену метода у кнопки:
         # на formmethod полагаться нельзя — регион терялся и сбор шёл по всей стране
         self.assertNotIn("formmethod", page)
 
     def test_all_actions_stand_in_one_row(self):
-        """Все шесть кнопок — внутри одного .buttons, переносов на вторую строку нет."""
+        """Кнопки действий — внутри одного .buttons, переносов на вторую строку нет."""
         page = web.render_index(self.conn, 10)
         start = page.index("<span class='buttons'>")
         end = page.index("</span>", start)
         block = page[start:end]
-        for label in ("Собрать вакансии", "Оценить", "Сгенерировать письма",
+        for label in ("Собрать вакансии", "Оценить",
                       "Экспорт писем в файлы", "Руководство",
                       "Профиль соискателя", "Очистить базу"):
             self.assertIn(label, block)
+        self.assertNotIn("Сгенерировать письма", block)
         self.assertEqual(block.count("btn danger"), 2)   # профиль и очистка — красные
         self.assertNotIn("</span><a class='btn'", page)
 
@@ -274,6 +276,34 @@ class CollectFromToolbarTest(Base):
         self.assertTrue(web.wait_run(30), "фоновый прогон не завершился")
         self.assertEqual(web.RUN["error"], "")
         self.assertIn("оценено новых", web.RUN["report"])
+
+
+class BalanceBoxTest(Base):
+    """Плашка баланса LLM видна и в списке (включая вторую страницу), и в карточке."""
+
+    def setUp(self):
+        super().setUp()
+        for patcher in (mock.patch.object(web.llm, "balance_supported", lambda s: True),
+                        mock.patch.object(web.llm, "is_enabled", lambda s: True),
+                        mock.patch.object(web.llm, "balance",
+                                          lambda s: {"ok": True, "text": "8.42 USD"})):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        for vid in ("1", "2", "3"):
+            self.scored(vid)
+        storage.save_letter(self.conn, "1", "Здравствуйте! Текст.", model="offline")
+
+    def test_badge_on_both_pages_of_the_list(self):
+        for page in (1, 2):
+            html = web.render_index(self.conn, 2, page=page)
+            self.assertIn("llm-balance", html, "нет плашки баланса на странице %d" % page)
+
+    def test_badge_on_card(self):
+        self.assertIn("llm-balance", web.render_card(self.conn, "1"))
+
+    def test_badge_hidden_without_llm(self):
+        with mock.patch.object(web.llm, "is_enabled", lambda s: False):
+            self.assertNotIn("llm-balance", web.render_index(self.conn, 2))
 
 
 if __name__ == "__main__":

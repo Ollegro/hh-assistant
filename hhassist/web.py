@@ -437,8 +437,9 @@ def render_index(conn, limit, msg="", region="", filters=None, page=1):
         _action_form("/run/collect", "Собрать вакансии", " primary",
                      region_value, hidden_filters),
         _action_form("/run/score", "Оценить", "", region_value, hidden_filters),
-        _action_form("/run/letters", "Сгенерировать письма", "",
-                     region_value, hidden_filters),
+        # Массовой генерации писем больше нет: каждый вызов LLM тратит токены,
+        # а письмо нужно только там, где человек уже решил откликаться.
+        # Кнопка «Сгенерировать письмо» живёт в карточке вакансии.
         "<a class='btn' href='/export'>Экспорт писем в файлы</a>",
         "<a class='btn success' href='/help'>Руководство</a>",
         "<a class='btn danger' href='/profile'>Профиль соискателя</a>",
@@ -1300,6 +1301,7 @@ def render_card(conn, vacancy_id, msg="", show_rules=False):
         rules_dialog(row, show_rules),
         "<script>var box=document.getElementById('rules');"
         "if(box&&box.getAttribute('data-open')==='1'){try{box.showModal();}catch(e){}}</script>",
+        balance_box(),
         "</main></body></html>",
     ]
     return "".join(parts)
