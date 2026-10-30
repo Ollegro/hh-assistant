@@ -785,9 +785,12 @@ def _profile_rows(profile):
     ]
 
 
-def render_profile(msg="", fields=None, method="", note=""):
-    """Страница профиля: что сохранено, загрузка резюме и предпросмотр разбора."""
+def render_profile(msg="", fields=None, method="", note="", diff=None):
+    """Страница профиля: что сохранено, загрузка резюме, предпросмотр и «было → стало»."""
     profile = get_settings().profile
+    pdf_ok = resume.pdf_supported()
+    saved_path, saved_name, saved_stamp = resume.saved_resume()
+    backup_path = resume.latest_backup()
     parts = [
         "<html><head><meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width, initial-scale=1'>"
@@ -805,18 +808,53 @@ def render_profile(msg="", fields=None, method="", note=""):
     parts.append("</table></div>")
 
     parts.append(
-        "<div class='card'><div class='meta'><b>Загрузить резюме</b> — файл TXT или DOCX "
-        "либо вставленный текст. PDF пока не поддерживается: сохраните резюме в DOCX/TXT. "
-        "Сначала покажем, что распознано, и спросим подтверждение.</div>"
+        "<div class='card'><div class='meta'><b>Обновить профиль из резюме</b> — %s "
+        "или вставленный текст. Профиль обновится сразу, прежняя версия уйдёт в бэкап "
+        "(рядом будет кнопка «Отменить»).</div>"
         "<form method='post' action='/profile' enctype='multipart/form-data'>"
-        "<div class='actions'><input type='file' name='file' accept='.txt,.docx,.pdf'>"
+        "<div class='actions'><input type='file' name='file' accept='%s'>"
         "<span class='meta'>до %d МБ</span></div>"
         "<textarea class='resume-text' name='text' placeholder='…или вставьте текст резюме "
         "целиком: должность, опыт, навыки, образование'></textarea>"
-        "<div class='actions'><button class='btn primary' type='submit' name='action' "
-        "value='parse'>Разобрать резюме</button>"
+        "<div class='actions'>"
+        "<button class='btn primary' type='submit' name='action' value='parse_apply'>"
+        "Загрузить и обновить профиль</button>"
+        "<button class='btn' type='submit' name='action' value='parse'>"
+        "Сначала показать, что распознано</button>"
         "<span class='meta'>с LLM разбор занимает до минуты; без ключа работают правила"
-        "</span></div></form></div>" % (resume.MAX_BYTES // (1024 * 1024)))
+        "</span></div></form></div>" % (
+            "файл PDF, DOCX или TXT" if pdf_ok else
+            "файл DOCX или TXT (PDF — если установлена библиотека pypdf)",
+            ".pdf,.docx,.txt" if pdf_ok else ".docx,.txt",
+            resume.MAX_BYTES // (1024 * 1024)))
+
+    tools = []
+    if saved_path:
+        tools.append(
+            "<form method='post' action='/profile' style='display:inline'>"
+            "<input type='hidden' name='action' value='reread'>"
+            "<button class='btn' type='submit'>Перечитать сохранённое резюме</button></form>"
+            "<span class='meta'>%s · %s</span>" % (esc(saved_name), esc(saved_stamp)))
+    if backup_path:
+        tools.append(
+            "<form method='post' action='/profile' style='display:inline'>"
+            "<input type='hidden' name='action' value='revert'>"
+            "<button class='btn' type='submit'>Отменить последнее обновление</button></form>"
+            "<span class='meta'>бэкап %s</span>" % esc(os.path.basename(backup_path)))
+    if tools:
+        parts.append("<div class='card'><div class='meta'><b>Резюме и откат</b> — "
+                     "профиль перечитывается из сохранённой копии или откатывается "
+                     "к прежней версии</div><div class='actions'>%s</div></div>"
+                     % "".join(tools))
+
+    if diff:
+        parts.append("<div class='card'><div class='meta'><b>Что изменилось в профиле</b>"
+                     " · полей: %d</div><table class='profile-table'>"
+                     "<tr><th>Поле</th><th>Было</th><th>Стало</th></tr>" % len(diff))
+        for label, was, now in diff:
+            parts.append("<tr><th>%s</th><td>%s</td><td>%s</td></tr>"
+                         % (esc(label), esc(was), esc(now)))
+        parts.append("</table></div>")
 
     if fields:
         rows = resume.describe(fields)
@@ -1385,40 +1423,51 @@ class Handler(BaseHTTPRequestHandler):
     def _form(self):
         """Поля POST-формы: urlencoded (карточка) или multipart (загрузка резюме).
 
+        Тело читается ОДИН раз и запоминается: повторный `read()` на живом
+        соединении ждал бы новых байт и вешал запрос (так зависала загрузка резюме).
         Файлы складываются в `self._files` как {поле: (имя, байты)}.
         """
+        if getattr(self, "_form_read", False):
+            return self._form_fields
+        self._form_read = True
+        self._form_fields = {}
         self._files = {}
         length = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(length) if length else b""
         if not body:
-            return {}
+            return self._form_fields
         ctype = self.headers.get("Content-Type") or ""
         if ctype.startswith("multipart/form-data"):
             fields, files = parse_multipart(body, ctype)
             self._files = files
-            return fields
-        return urllib.parse.parse_qs(body.decode("utf-8", "replace"))
+            self._form_fields = fields
+        else:
+            self._form_fields = urllib.parse.parse_qs(body.decode("utf-8", "replace"))
+        return self._form_fields
 
     def _profile_post(self, conn):
-        """POST /profile: action=parse (разобрать резюме, показать предпросмотр)
-        или action=apply (записать разобранное в профиль).
+        """POST /profile: parse (предпросмотр), parse_apply (обновить сразу),
+        apply (записать предпросмотр), reread (из сохранённой копии), revert (откат).
 
-        Возвращает ("html", тело) для parse — тело уже отправляется как страница,
-        или ("", отчёт) для apply — отчёт уходит в redirect-сообщение."""
+        Возвращает ("html", тело) — страница отправляется сразу, или ("", отчёт) —
+        отчёт уходит в redirect-сообщение."""
         action = (self._form().get("action") or [""])[0]
-        if action == "parse":
+        if action in ("parse", "parse_apply"):
             text = (self._form().get("text") or [""])[0]
             uploaded = self._files.get("file")
             filename = uploaded[0] if uploaded else ""
             data = uploaded[1] if uploaded else b""
             if not text and not data:
                 return ("", "ничего не передано: приложите файл или вставьте текст резюме")
+            if data:
+                resume.save_resume_copy(filename, data)  # копия для «Перечитать»
             if not text and data:
                 text = resume.text_from_upload(filename, data)
-            settings = get_settings()
-            parsed, method, note = resume.parse_resume(text, settings)
-            html = render_profile(fields=parsed, method=method, note=note)
-            return ("html", html)
+            parsed, method, note = resume.parse_resume(text, get_settings())
+            if action == "parse":
+                return ("html", render_profile(fields=parsed, method=method, note=note))
+            report, changes = self._profile_apply(parsed, note or method)
+            return ("html", render_profile(msg=report, diff=changes))
         if action == "apply":
             payload = (self._form().get("fields") or [""])[0]
             if not payload:
@@ -1427,11 +1476,38 @@ class Handler(BaseHTTPRequestHandler):
                 parsed = json.loads(payload)
             except ValueError:
                 return ("", "ошибка разбора разобранных данных: попробуйте загрузить резюме ещё раз")
-            current = dict(get_settings().profile)
-            merged = resume.merge_profile(current, parsed)
-            resume.save_profile(merged)
-            return ("", "профиль обновлён из резюме")
+            report, _changes = self._profile_apply(parsed, "")
+            return ("", report)
+        if action == "reread":
+            path, name, stamp = resume.saved_resume()
+            if not path:
+                return ("", "сохранённой копии резюме нет — сначала загрузите файл")
+            with open(path, "rb") as fh:
+                data = fh.read()
+            text = resume.text_from_upload(name, data)
+            parsed, method, note = resume.parse_resume(text, get_settings())
+            report, changes = self._profile_apply(parsed, "%s от %s" % (name, stamp))
+            return ("html", render_profile(msg=report, diff=changes))
+        if action == "revert":
+            try:
+                _backup, when = resume.restore_backup()
+            except ValueError as exc:
+                return ("", str(exc))
+            return ("", "профиль возвращён к версии от %s" % when)
         return ("", "неизвестное действие профиля")
+
+    def _profile_apply(self, parsed, source=""):
+        """Слияние с профилем и запись. Возвращает (отчёт, [(поле, было, стало)])."""
+        current = dict(get_settings().profile)
+        merged = resume.merge_profile(current, parsed)
+        changes = resume.diff_profiles(current, merged)
+        resume.save_profile(merged)
+        tail = (" · " + source) if source else ""
+        if not changes:
+            return ("профиль без изменений: в резюме нет новых данных%s" % tail, [])
+        return ("профиль обновлён%s · изменилось полей: %d (%s)"
+                % (tail, len(changes), ", ".join(label for label, _was, _now in changes)),
+                changes)
 
     def _deny(self, text, status=403):
         """Страница отказа без вызова браузерного окна Basic Auth."""
@@ -1561,7 +1637,8 @@ class Handler(BaseHTTPRequestHandler):
                            "<div class='actions'><a class='btn' href='/'>← назад</a></div>"
                            "</main></body></html>" % (made, esc(out_dir)))
             elif path == "/profile":
-                self._send(render_profile())
+                qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                self._send(render_profile(msg=qs.get("msg", [""])[0]))
             elif path == "/help":
                 self._send(render_help())
             else:

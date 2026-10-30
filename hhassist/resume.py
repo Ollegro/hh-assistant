@@ -3,9 +3,10 @@
 
 Заказчик просил загружать резюме в программу. Порядок работы:
 
-1. `text_from_upload()` — достаёт текст из TXT или DOCX (stdlib: zipfile + XML).
-   PDF пока не поддержан осознанно: нужен либо отдельный пакет, либо свой
-   разборщик шрифтов; при загрузке PDF отдаём понятное сообщение, а не мусор.
+1. `text_from_upload()` — достаёт текст из PDF, TXT или DOCX (DOCX — stdlib:
+   zipfile + XML; PDF — необязательные pypdf/pdfminer). Своего разборщика PDF нет
+   осознанно: у hh-экспорта и reportlab-файлов разные карты символов, самодельный
+   разбор даёт «кракозябры». Без библиотеки — понятное сообщение, а не мусор.
 2. `extract_fields()` — правила: должность, роли, стек, вилка, формат, уровень,
    опыт работы, образование, языки, «факты с цифрами» для письма.
 3. `llm_parse()` — тот же разбор через LLM (если ключ задан); LLM идёт первым,
@@ -20,17 +21,19 @@ import io
 import json
 import os
 import re
+import shutil
 import zipfile
 from datetime import datetime
 
 from . import llm
-from .config import PROFILE_PATH, get_settings
+from .config import DATA_DIR, PROFILE_PATH, get_settings
 
 MAX_BYTES = 5 * 1024 * 1024          # больше не принимаем: это резюме, а не архив
 MAX_TEXT = 60000                      # столько символов разбираем (остальное отбрасываем)
-MAX_PDF_MESSAGE = ("PDF пока не поддерживается: сохраните резюме в DOCX или TXT "
-                   "либо вставьте текст на страницу профиля")
+PDF_NO_LIBRARY_MESSAGE = ("PDF не читается: нужна библиотека pypdf (pip install pypdf) — "
+                          "либо сохраните резюме в DOCX/TXT и вставьте текст на странице профиля")
 BINARY_RATIO = 0.10                   # доля «непечатных» символов, после которой это не текст
+RESUME_DIR = os.path.join(DATA_DIR, "resume")   # копия загруженного резюме (data/ в .gitignore)
 
 
 def _decode(data):
@@ -47,6 +50,57 @@ def _decode(data):
                 continue
         return text
     raise ValueError("не удалось прочитать текст: файл не похож на текстовый")
+
+
+def pdf_supported():
+    """True, если установлена библиотека для чтения PDF (pypdf или pdfminer)."""
+    for module in ("pypdf", "pdfminer.high_level"):
+        try:
+            __import__(module)
+        except ImportError:
+            continue
+        return True
+    return False
+
+
+def pdf_to_text(data):
+    """PDF -> текст через pypdf, при его отсутствии через pdfminer.
+
+    Библиотеки необязательны: без них проект остаётся на стандартной библиотеке,
+    а человек получает понятное сообщение и путь «DOCX/TXT или вставить текст».
+    """
+    errors = []
+    try:
+        from pypdf import PdfReader
+    except ImportError:
+        PdfReader = None
+    if PdfReader is not None:
+        try:
+            reader = PdfReader(io.BytesIO(data))
+            text = "\n".join((page.extract_text() or "") for page in reader.pages)
+        except Exception as exc:  # битый, зашифрованный или нестандартный PDF
+            errors.append("pypdf: %s" % exc)
+        else:
+            if text.strip():
+                return text
+            errors.append("pypdf: текст не найден")
+    try:
+        from pdfminer.high_level import extract_text as pdfminer_text
+    except ImportError:
+        pdfminer_text = None
+    if pdfminer_text is not None:
+        try:
+            text = pdfminer_text(io.BytesIO(data)) or ""
+        except Exception as exc:
+            errors.append("pdfminer: %s" % exc)
+        else:
+            if text.strip():
+                return text
+            errors.append("pdfminer: текст не найден")
+    if errors:
+        raise ValueError("не удалось прочитать PDF (%s) — сохраните резюме в DOCX/TXT "
+                         "или вставьте текст на странице профиля" % "; ".join(errors))
+    raise ValueError(PDF_NO_LIBRARY_MESSAGE)
 
 
 def docx_to_text(data):
@@ -75,8 +129,8 @@ def text_from_upload(filename, data):
                          % (MAX_BYTES // (1024 * 1024)))
     name = (filename or "").lower()
     if data.startswith(b"%PDF") or name.endswith(".pdf"):
-        raise ValueError(MAX_PDF_MESSAGE)
-    if data.startswith(b"PK\x03\x04") or name.endswith(".docx"):
+        text = pdf_to_text(data)
+    elif data.startswith(b"PK\x03\x04") or name.endswith(".docx"):
         text = docx_to_text(data)
     else:
         text = _decode(data)
@@ -569,8 +623,6 @@ def merge_profile(current, extracted):
 
 def save_profile(profile, path=None):
     """Пишет profile.json, сохраняя бэкап прежней версии. Возвращает имя бэкапа."""
-    import shutil
-
     path = path or PROFILE_PATH
     os.makedirs(os.path.dirname(path), exist_ok=True)
     backup = ""
@@ -581,6 +633,115 @@ def save_profile(profile, path=None):
         json.dump(profile, fh, ensure_ascii=False, indent=1)
         fh.write("\n")
     return backup
+
+
+def save_resume_copy(filename, data):
+    """Кладёт загруженное резюме в `data/resume/last.<ext>` — для «Перечитать резюме»."""
+    ext = os.path.splitext(filename or "")[1].lower()
+    if ext not in (".pdf", ".docx", ".txt"):
+        ext = ".bin"
+    os.makedirs(RESUME_DIR, exist_ok=True)
+    path = os.path.join(RESUME_DIR, "last" + ext)
+    for old in glob.glob(os.path.join(RESUME_DIR, "last.*")):
+        if os.path.abspath(old) != os.path.abspath(path):
+            try:                       # расширение могло смениться: старую копию убираем
+                os.remove(old)
+            except OSError:
+                pass
+    with open(path, "wb") as fh:
+        fh.write(data or b"")
+    return path
+
+
+def saved_resume():
+    """(путь, имя файла, дата) последней сохранённой копии резюме или (None, "", "")."""
+    paths = [item for item in glob.glob(os.path.join(RESUME_DIR, "last.*"))
+             if os.path.isfile(item)]
+    if not paths:
+        return None, "", ""
+    path = max(paths, key=os.path.getmtime)
+    stamp = datetime.fromtimestamp(os.path.getmtime(path)).strftime("%d.%m.%Y %H:%M")
+    return path, os.path.basename(path), stamp
+
+
+def latest_backup(path=None):
+    """Путь последнего бэкапа profile.json или "" (бэкапы делает save_profile)."""
+    path = path or PROFILE_PATH
+    items = sorted(glob.glob(path + ".bak-*"))
+    return items[-1] if items else ""
+
+
+def restore_backup(path=None):
+    """Откат профиля к последнему бэкапу. Возвращает (путь бэкапа, когда он сделан)."""
+    backup = latest_backup(path)
+    if not backup:
+        raise ValueError("бэкапов профиля нет — откатывать нечего")
+    shutil.copy2(backup, path or PROFILE_PATH)
+    stamp = os.path.basename(backup).split(".bak-")[-1]
+    try:
+        when = datetime.strptime(stamp, "%Y%m%d-%H%M%S").strftime("%d.%m.%Y %H:%M")
+    except ValueError:
+        when = stamp
+    return backup, when
+
+
+DIFF_LABELS = (
+    ("headline", "Профессия"),
+    ("target_roles", "Целевые роли"),
+    ("seniority", "Уровень"),
+    ("salary", "Вилка"),
+    ("formats", "Формат работы"),
+    ("stack", "Стек"),
+    ("work_history", "Опыт работы"),
+    ("education", "Образование"),
+    ("languages", "Языки"),
+    ("facts", "Факты для письма"),
+)
+
+
+def _value_text(key, source):
+    """Значение поля профиля одной строкой: для «было → стало»."""
+    source = source or {}
+    if key == "salary":
+        low, high = source.get("salary_from"), source.get("salary_to")
+        if low and high and low == high:
+            return "%s ₽" % money(low)
+        if low and high:
+            return "%s–%s ₽" % (money(low), money(high))
+        if low:
+            return "от %s ₽" % money(low)
+        if high:
+            return "до %s ₽" % money(high)
+        return "—"
+    if key == "stack":
+        stack = source.get("stack") or {}
+        parts = []
+        if stack.get("must"):
+            parts.append(", ".join(stack["must"]))
+        if stack.get("nice"):
+            parts.append("+ " + ", ".join(stack["nice"]))
+        return " · ".join(parts) or "—"
+    if key == "work_history":
+        return "; ".join("%s — %s (%s)" % (job.get("company") or "—", job.get("role") or "—",
+                                           job.get("period") or "—")
+                         for job in source.get("work_history") or []) or "—"
+    if key == "languages":
+        return ", ".join("%s — %s" % (name, level)
+                         for name, level in (source.get("languages") or {}).items()) or "—"
+    value = source.get(key)
+    if isinstance(value, (list, tuple)):
+        return "; ".join(str(item) for item in value) or "—"
+    return str(value or "—")
+
+
+def diff_profiles(before, after):
+    """[(подпись, было, стало)] — только по реально изменившимся полям профиля."""
+    rows = []
+    for key, label in DIFF_LABELS:
+        was, now = _value_text(key, before), _value_text(key, after)
+        if was != now:
+            rows.append((label, was, now))
+    return rows
 
 
 def money(value):
