@@ -103,12 +103,22 @@ bash /root/hh-src/deploy/letsencrypt-ip.sh --ip 203.0.113.10 --email me@example.
 `hh-certbot-renew.timer` — проверка продления дважды в сутки, потому что сертификат
 живёт 6 дней.
 
+**Где живёт сертификат.** Состояние certbot для IP-адреса — в `/etc/letsencrypt-ip`
+(work-каталог `/var/lib/letsencrypt-ip`, журналы `/var/log/letsencrypt-ip`), отдельно от
+доменных сертификатов в `/etc/letsencrypt`. Так системный `certbot.timer` (2.9.0, IP-адресов
+не умеет) не видит `hh-ip` и не падает с `At least one of domains or ipaddrs parameter need
+to be not empty`; у двух certbot ещё и разные lock-файлы, поэтому таймеры не мешают друг другу.
+Сертификат приложения браузер не видит: nginx проксирует на `https://127.0.0.1:8443`
+с `proxy_ssl_verify off`, а посетителям отдаётся доменный сертификат `hh.jobsearch-ai.ru`.
+
 Проверка результата:
 
 ```bash
 openssl s_client -connect <IP>:8443 </dev/null 2>/dev/null | openssl x509 -noout -issuer -dates
 systemctl list-timers hh-certbot-renew.timer --no-pager
-/opt/certbot-ip/bin/certbot renew --dry-run
+/opt/certbot-ip/bin/certbot renew --dry-run --config-dir /etc/letsencrypt-ip \
+    --work-dir /var/lib/letsencrypt-ip --logs-dir /var/log/letsencrypt-ip
+systemctl start certbot.service && echo "системный certbot: без ошибок"
 ```
 
 Если порт 80 занят веб-сервером (часто `nginx`), нужен именно **webroot его

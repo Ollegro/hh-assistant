@@ -472,3 +472,49 @@ API SuperJob и «Работы России»); 3) диспетчер, деду�
 **Риски.** Парсеры Хабра и getmatch хрупкие (разметка/шаблон); у «Работы России» и getmatch
 регион фильтруется по названию субъекта, а не по id hh; лимиты площадок не документированы,
 поэтому пауза между запросами обязательна.
+## 19. 30.10.2026 — IP-сертификат `hh-ip` вынесен из общего `/etc/letsencrypt` (утверждено, выполняется)
+
+**Откуда задача.** Системный `certbot.timer` (certbot 2.9.0) каждые 12 часов падает:
+`Failed to renew certificate hh-ip with error: At least one of domains or ipaddrs parameter
+need to be not empty` → `1 renew failure(s)` → `status=1/FAILURE`. Причина: `hh-ip` —
+**наш** IP-сертификат (SAN `IP Address:135.106.183.205`, профиль `shortlived`, срок 6 дней),
+его выпускает venv-certbot 5.8.0 из `deploy/letsencrypt-ip.sh`, а 2.9 IP-адреса не умеет
+и в общем каталоге `/etc/letsencrypt` видит его как «сертификат без доменов». Наше продление
+работает (`hh-certbot-renew.timer`: 28.10 15:34, 29.10 03:32/15:34, 30.10 03:34 — OK), домен
+`hh.jobsearch-ai.ru` (до 23.01.2027) отдаёт nginx и он вне этой петли.
+
+**Цель.** Убрать ложную ошибку системного certbot и гонку за общий lock, не меняя схему
+«приложение отдаёт TLS на `127.0.0.1:8443`».
+
+| Входит | Не входит (сознательно) |
+|---|---|
+| IP-сертификат живёт в `/etc/letsencrypt-ip` (`--config-dir`/`--work-dir`/`--logs-dir`) | Отказ от IP-сертификата и переход приложения на HTTP (вариант B — отложен) |
+| `deploy/letsencrypt-ip.sh`: флаги в `certonly` и в `ExecStart` юнита | Правки чужих сертификатов и их renewal-конфигов |
+| Перевыдача IP-сертификата (сначала staging), хук тот же | Изменения в nginx (`ssl_certificate` домена, `proxy_ssl_verify off`) |
+| Удаление `hh-ip` из общего `/etc/letsencrypt` с бэкапом в `/root/certbot-backup-<дата>/` | Переустановка certbot в venv |
+
+**Шаги и критерии готовности.**
+1. `deploy/letsencrypt-ip.sh`: константы `IPCERT_DIR=/etc/letsencrypt-ip`,
+   `IPWORK_DIR`, `IPLOG_DIR`; флаги в `certonly` и в `ExecStart` таймера; подсказка в шапке.
+   Критерий: `bash -n deploy/letsencrypt-ip.sh` без ошибок, `./letsencrypt-ip.sh --help` печатает шапку.
+2. `deploy/README.md`, `README.md`, `DEVLOG.md`, `PLAN.md` — новое расположение и порядок проверки.
+   Критерий: в документации нет `/etc/letsencrypt/live/hh-ip` как рабочего пути.
+3. Тесты проекта. Критерий: `python -m unittest discover -s tests -p "test_*.py"` — `Ran 416 tests … OK`.
+4. На сервере после деплоя кода: `bash deploy/letsencrypt-ip.sh --dry-run` (staging).
+   Критерий: `Successfully received certificate` или «тренировка на staging прошла».
+5. Боевая перевыдача: `bash deploy/letsencrypt-ip.sh`.
+   Критерий: новый сертификат в `/etc/letsencrypt-ip/live/hh-ip/`, `config/tls.crt` совпадает с ним,
+   `systemctl is-active hh-assistant` = `active`, `curl -k https://127.0.0.1/login` → `200`.
+6. Чистка: бэкап и удаление `live/hh-ip`, `archive/hh-ip`, `renewal/hh-ip.conf` из `/etc/letsencrypt`.
+   Критерий: `certbot certificates` больше не показывает `hh-ip`.
+7. Проверки: `systemctl start certbot.service` → exit 0, в журнале нет `renew failure`;
+   `systemctl start hh-certbot-renew.service` → `Deactivated successfully`;
+   `/opt/certbot-ip/bin/certbot renew --dry-run` → OK.
+8. Коммит `Сертификат IP вынесен в /etc/letsencrypt-ip`, деплой, записи в `DEVLOG.md`.
+
+**Риски.** Одна перевыдача сертификата (лимиты LE для `shortlived` мягкие, но повторять
+подряд не стоит); если перевыдача не пройдёт — старый сертификат продолжает работать до 03.11,
+откат — вернуть каталоги из бэкапа и снять флаги. Lock-файлы у двух certbot теперь разные,
+поэтому пересечение таймеров безопасно.
+
+

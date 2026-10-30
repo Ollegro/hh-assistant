@@ -11,9 +11,10 @@
 #        --dir /opt/hh-assistant --user hhassist --email me@example.com
 #   bash deploy/letsencrypt-ip.sh --dry-run     # тренировка на staging
 #
-# Что делает: certbot в /opt/certbot-ip → выпуск сертификата (http-01 через
-# webroot вашего веб-сервера) → hook, который кладёт fullchain/privkey в
-# config/tls.* и перезапускает hh-assistant → systemd-таймер продления дважды
+# Что делает: certbot в /opt/certbot-ip → выпуск сертификата (http-01 в общем webroot
+# вашего веб-сервера, состояние — в /etc/letsencrypt-ip, отдельно от доменных
+# сертификатов и системного certbot 2.9) → hook, который кладёт fullchain/privkey
+# в config/tls.* и перезапускает hh-assistant → systemd-таймер продления дважды
 # в сутки (сертификат живёт 6 дней).
 set -euo pipefail
 
@@ -24,6 +25,14 @@ RUN_USER="hhassist"
 EMAIL=""
 DRY_RUN=0
 CERT_NAME="hh-ip"
+# Своё состояние certbot: доменные сертификаты живут в /etc/letsencrypt и
+# продлеваются системным certbot 2.9, который IP-адресов не умеет. Общий каталог
+# заставлял его падать на hh-ip («domains or ipaddrs need to be not empty»),
+# поэтому IP-сертификат хранится отдельно — со своим конфигом, work- и log-каталогом
+# (и, значит, со своим lock-файлом).
+IPCERT_DIR="/etc/letsencrypt-ip"
+IPWORK_DIR="/var/lib/letsencrypt-ip"
+IPLOG_DIR="/var/log/letsencrypt-ip"
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -34,7 +43,7 @@ while [ $# -gt 0 ]; do
         --email) EMAIL="$2"; shift 2 ;;
         --cert-name) CERT_NAME="$2"; shift 2 ;;
         --dry-run) DRY_RUN=1; shift ;;
-        -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
         *) echo "неизвестный параметр: $1" >&2; exit 2 ;;
     esac
 done
@@ -48,6 +57,7 @@ fi
 echo "IP: $IP"
 echo "webroot: $WEBROOT (каталог, который ваш веб-сервер отдаёт по этому IP на порту 80)"
 echo "приложение: $DIR (пользователь $RUN_USER)"
+echo "состояние certbot для IP: $IPCERT_DIR (отдельно от доменных сертификатов)"
 
 # 1. Свежий certbot в отдельном venv: системный 2.9.0 не умеет --ip-address.
 CERTBOT=/opt/certbot-ip/bin/certbot
@@ -65,7 +75,7 @@ cat > "$HOOK" <<HOOKEOF
 #!/bin/sh
 # Кладёт свежий сертификат Let's Encrypt в приложение и перезапускает его.
 set -e
-LIVE=/etc/letsencrypt/live/$CERT_NAME
+LIVE=$IPCERT_DIR/live/$CERT_NAME
 install -m 644 -o $RUN_USER -g $RUN_USER "\$LIVE/fullchain.pem" $DIR/config/tls.crt
 install -m 600 -o $RUN_USER -g $RUN_USER "\$LIVE/privkey.pem" $DIR/config/tls.key
 systemctl restart hh-assistant
@@ -73,10 +83,11 @@ HOOKEOF
 chmod +x "$HOOK"
 
 # 3. Выпуск (http-01: файл проверки отдаёт уже работающий веб-сервер).
-mkdir -p "$WEBROOT/.well-known/acme-challenge"
+mkdir -p "$WEBROOT/.well-known/acme-challenge" "$IPCERT_DIR" "$IPWORK_DIR" "$IPLOG_DIR"
 EXTRA=(--register-unsafely-without-email)
 [ -n "$EMAIL" ] && EXTRA=(--email "$EMAIL")
 ARGS=(certonly --preferred-profile shortlived --webroot --webroot-path "$WEBROOT"
+      --config-dir "$IPCERT_DIR" --work-dir "$IPWORK_DIR" --logs-dir "$IPLOG_DIR"
       --ip-address "$IP" --cert-name "$CERT_NAME" --non-interactive --agree-tos
       "${EXTRA[@]}" --deploy-hook "$HOOK")
 [ "$DRY_RUN" = "1" ] && ARGS+=(--staging)
@@ -93,7 +104,7 @@ cat > /etc/systemd/system/hh-certbot-renew.service <<UNITEOF
 Description=Продление сертификата Let's Encrypt для hh-assistant (IP)
 [Service]
 Type=oneshot
-ExecStart=$CERTBOT renew --quiet --deploy-hook $HOOK
+ExecStart=$CERTBOT renew --quiet --config-dir $IPCERT_DIR --work-dir $IPWORK_DIR --logs-dir $IPLOG_DIR --deploy-hook $HOOK
 UNITEOF
 cat > /etc/systemd/system/hh-certbot-renew.timer <<'UNITEOF'
 [Unit]
@@ -110,3 +121,13 @@ systemctl enable --now hh-certbot-renew.timer
 systemctl list-timers hh-certbot-renew.timer --no-pager | head -3
 
 echo "готово: https://$IP:8443 — сертификат доверенный, браузер не предупреждает"
+
+if [ -d "/etc/letsencrypt/live/$CERT_NAME" ]; then
+    echo
+    echo "внимание: в общем /etc/letsencrypt остался прежний $CERT_NAME."
+    echo "он больше не продлевается (рабочий — в $IPCERT_DIR). После проверки нового"
+    echo "сертификата старый можно убрать, чтобы системный certbot не спотыкался о него:"
+    echo "  tar czf /root/certbot-backup-$(date +%F).tgz -C /etc/letsencrypt live/$CERT_NAME archive/$CERT_NAME renewal/$CERT_NAME.conf"
+    echo "  rm -rf /etc/letsencrypt/live/$CERT_NAME /etc/letsencrypt/archive/$CERT_NAME /etc/letsencrypt/renewal/$CERT_NAME.conf"
+fi
+
