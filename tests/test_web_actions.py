@@ -89,7 +89,7 @@ class CollectActionTest(WebBase):
         report, calls = self.run_collect(queries)
         self.assertEqual([c["query"] for c in calls], queries)
         self.assertEqual(report, "собрано вакансий: 5 из 250 найденных "
-                                 "(источник: html, запросов: 5, лимит: 20 на запрос, "
+                                 "(источник: hh, запросов: 5, лимит: 20 на запрос, "
                                  "всего до 200, регион: вся Россия)")
 
     def test_region_from_form_goes_to_collector(self):

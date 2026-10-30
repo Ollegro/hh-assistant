@@ -34,7 +34,7 @@ def vacancy_dict(row):
 
 
 def collect_queries(conn, queries, settings, limit=None, pages=None, on_item=None,
-                    area_ids=None, total_limit=None, should_stop=None):
+                    area_ids=None, total_limit=None, should_stop=None, sources=None):
     """Собирает вакансии по всем запросам. Возвращает (saved, found, source, notes).
 
     `limit` — максимум вакансий на один запрос, `total_limit` — максимум за прогон
@@ -44,6 +44,9 @@ def collect_queries(conn, queries, settings, limit=None, pages=None, on_item=Non
 
     `should_stop` — функция без аргументов; как только вернёт True, сбор
     прекращается (кнопка «Остановить» в интерфейсе). Уже сохранённое остаётся.
+
+    `sources` — список площадок: ("hh",) по умолчанию; поддерживаются
+    "hh", "habr", "superjob", "trudvsem", "getmatch" и "all".
     """
     limit = settings.collect_limit if limit is None else limit
     pages = settings.collect_pages if pages is None else pages
@@ -52,59 +55,78 @@ def collect_queries(conn, queries, settings, limit=None, pages=None, on_item=Non
     areas = list(area_ids or getattr(settings, "collect_areas", None) or [113])
     refresh_days = int(getattr(settings, "collect_refresh_days", 0) or 0)
     remote = bool(getattr(settings, "collect_remote", False))
+    from . import sources as external
+    if sources is None:
+        raw = getattr(settings, "collect_sources", "hh") or "hh"
+        sources = tuple(part.strip() for part in str(raw).split(",") if part.strip())
+    picked = [name for name in sources if name]
+    if "all" in picked:
+        picked = ["hh"] + list(external.SOURCES)
+    picked = list(dict.fromkeys(picked)) or ["hh"]
     # инкрементальный сбор: недавно виденные вакансии повторно не скачиваем
     known = storage.seen_index(conn) if refresh_days else {}
-    saved = found = skipped = 0
+    saved = found = skipped = duplicates = 0
     source = "html"
     notes = []
     saved_ids = set()
     stopped = False
     for query in queries:
-        if should_stop and should_stop():
-            stopped = True
-            break
-        left = total_limit - saved if total_limit else 0
-        if total_limit and left <= 0:
-            notes.append("достигнут предел сбора за прогон: %d" % total_limit)
-            break
-        per_query = min(limit, left) if total_limit else limit
-        try:
-            vacancies, info = collector.collect(query, area=areas, pages=pages,
-                                                per_page=50, limit=per_query, known=known,
-                                                refresh_days=refresh_days, remote=remote)
-        except Exception as exc:  # сеть, блокировка, парсер — один запрос не рушит прогон
-            notes.append("«%s»: поиск не удался (%s)" % (query, exc))
-            storage.log_event(conn, "collect_error", {"query": query, "error": str(exc)})
-            continue
-        source = info["source"]
-        found += info.get("found", 0)
-        skipped += info.get("skipped", 0)
-        if info["fallback"]:
-            notes.append("откат на HTML: %s" % info["reason"])
-            storage.log_event(conn, "source_fallback",
-                              {"query": query, "reason": info["reason"]})
-        health = info.get("quality") or {}
-        if health.get("state") in ("suspect", "empty"):
-            storage.log_event(conn, "parser_suspect",
-                              {"query": query, "source": info["source"], "quality": health})
-            notes.append("«%s»: похоже, парсер сломался (%s)" % (query, health))
-        for v in vacancies:
+        for name in picked:
             if should_stop and should_stop():
                 stopped = True
                 break
-            if total_limit and saved >= total_limit:
+            left = total_limit - saved if total_limit else 0
+            if total_limit and left <= 0:
+                notes.append("достигнут предел сбора за прогон: %d" % total_limit)
                 break
-            storage.upsert_vacancy(conn, v, commit=False)
-            saved += 1
-            saved_ids.add(str(v.get("id")))
-            _commit_progress(conn, saved)
-            if on_item:
-                on_item(v)
+            per_query = min(limit, left) if total_limit else limit
+            try:
+                vacancies, info = collector.collect(
+                    query, area=areas, pages=pages, per_page=50, limit=per_query,
+                    source=name, known=known, refresh_days=refresh_days, remote=remote)
+            except Exception as exc:  # сеть, ключ площадки, парсер — не рушим прогон
+                notes.append("«%s» (%s): поиск не удался (%s)"
+                             % (query, external.TITLES.get(name, name), exc))
+                storage.log_event(conn, "collect_error",
+                                  {"query": query, "source": name, "error": str(exc)})
+                continue
+            source = info["source"]
+            found += info.get("found", 0)
+            skipped += info.get("skipped", 0)
+            if info["fallback"]:
+                notes.append("откат на HTML: %s" % info["reason"])
+                storage.log_event(conn, "source_fallback",
+                                  {"query": query, "reason": info["reason"]})
+            health = info.get("quality") or {}
+            if health.get("state") in ("suspect", "empty"):
+                storage.log_event(conn, "parser_suspect",
+                                  {"query": query, "source": info["source"], "quality": health})
+                notes.append("«%s» (%s): похоже, парсер сломался (%s)"
+                             % (query, external.TITLES.get(name, name), health))
+            for v in vacancies:
+                if should_stop and should_stop():
+                    stopped = True
+                    break
+                if total_limit and saved >= total_limit:
+                    break
+                if storage.find_duplicate(conn, v):
+                    duplicates += 1
+                    continue
+                storage.upsert_vacancy(conn, v, commit=False)
+                saved += 1
+                saved_ids.add(str(v.get("id")))
+                _commit_progress(conn, saved)
+                if on_item:
+                    on_item(v)
+            if stopped:
+                break
         if stopped:
             break
     conn.commit()
     if skipped:
         notes.append("уже в базе, повторно не скачивали: %d" % skipped)
+    if duplicates:
+        notes.append("похожие вакансии с других площадок: %d (в базу не писали)" % duplicates)
     unique = len(saved_ids)
     if unique and unique != saved:
         # Одна вакансия может прийти по двум запросам: записей больше, чем вакансий.
@@ -113,7 +135,7 @@ def collect_queries(conn, queries, settings, limit=None, pages=None, on_item=Non
     if stopped:
         notes.insert(0, "остановлено пользователем: сохранено %d из %d найденных"
                         % (saved, found))
-    return saved, found, source, notes
+    return saved, found, ",".join(picked), notes
 
 
 def score_pending(conn, settings, force=False, on_item=None, should_stop=None):

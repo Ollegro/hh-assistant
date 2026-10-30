@@ -350,6 +350,27 @@ def parse_vacancy(html_text, vacancy_id):
     }
 
 
+def _collect_external(name, query, area, pages, per_page, limit, known, refresh_days, remote):
+    """Сбор с внешней площадки (Хабр Карьера, SuperJob, Работа России, getmatch).
+
+    Формат вакансии тот же, что у hh, поэтому скоринг и письма работают без правок;
+    отличается только `id` — с префиксом площадки, чтобы записи не сталкивались.
+    """
+    from . import sources as external
+
+    s = get_settings()
+    pause = float(getattr(s, "delay_seconds", 0) or 0) or 1.0
+    found = external.collect(name, query, area=area, pages=pages, per_page=per_page,
+                             pause=pause, remote=remote)
+    skip = _recent_ids(known, refresh_days)
+    skipped = sum(1 for vacancy in found if str(vacancy.get("id")) in skip)
+    vacancies = [vacancy for vacancy in found if str(vacancy.get("id")) not in skip]
+    if limit:
+        vacancies = vacancies[:limit]
+    return vacancies, _info(name, False, "", len(found), len(vacancies), skipped, [],
+                            vacancies, known)
+
+
 def fetch_vacancy(vacancy_id, pause=1.2):
     """Скачивает и разбирает одну вакансию."""
     html_text = http_get(VACANCY_URL % vacancy_id)
@@ -365,6 +386,8 @@ def collect(query, area=1, pages=1, per_page=50, limit=None, source=None, detail
 
     source: "auto" (по умолчанию значение HH_SOURCE) — API hh.ru, если настроен токен
     приложения, иначе HTML; при ошибке API в режиме auto — откат на HTML.
+    Дополнительно принимаются внешние площадки из `hhassist.sources`
+    (habr, superjob, trudvsem, getmatch) — каждая со своим парсером.
     area — id региона или список id. remote=True — только удалёнка.
     known — {vacancy_id: время последнего сбора}: вакансии, собранные меньше
     refresh_days дней назад, заново не скачиваются (инкрементальный сбор).
@@ -374,7 +397,14 @@ def collect(query, area=1, pages=1, per_page=50, limit=None, source=None, detail
     s = get_settings()
     mode = (source or getattr(s, "hh_source", "auto") or "auto").strip().lower()
     if mode not in ("auto", "api", "html"):
-        raise ValueError("источник должен быть auto|api|html, получено: %r" % mode)
+        from . import sources as external
+
+        if not external.get(mode):
+            raise ValueError("источник должен быть auto|api|html|%s, получено: %r"
+                             % ("|".join(external.SOURCES), mode))
+        return _collect_external(mode, query, area=area, pages=pages, per_page=per_page,
+                                 limit=limit, known=known, refresh_days=refresh_days,
+                                 remote=remote)
 
     skip = _recent_ids(known, refresh_days)
     reason = ""

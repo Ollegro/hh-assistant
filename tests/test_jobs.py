@@ -95,7 +95,7 @@ class CollectQueriesTest(JobsBase):
         with mock.patch.object(collector, "collect", self.fake_collect(calls)):
             saved, found, source, notes = jobs.collect_queries(self.conn, ["a", "b"], settings())
         self.assertEqual([c["query"] for c in calls], ["a", "b"])
-        self.assertEqual((saved, found, source, notes), (4, 20, "api", []))
+        self.assertEqual((saved, found, source, notes), (4, 20, "hh", []))
         self.assertEqual(self.count("vacancies"), 4)
 
     def test_limit_and_pages_from_settings(self):

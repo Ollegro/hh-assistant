@@ -281,6 +281,45 @@ def last_collect(conn):
     return None
 
 
+HH_SOURCE_FAMILY = ("hh", "html", "api", "auto")
+
+
+def _source_family(source):
+    """Площадка по метке источника: hh (html/api/auto) и пустая метка — одна семья."""
+    value = (source or "").strip().lower()
+    return "hh" if not value or value in HH_SOURCE_FAMILY else value
+
+
+def find_duplicate(conn, vacancy):
+    """id вакансии с другой площадки, которая уже есть в базе.
+
+    Дубли бывают между площадками (одна вакансия висит на hh и на Хабре), а внутри
+    одной площадки две вакансии с одинаковым названием и компанией — это норма
+    (разные города или разные команды), их склеивать нельзя. Поэтому сравниваем
+    только записи разных площадок и требуем совпадения города.
+    Регистр приводим в Python: `lower()` в SQLite понимает только латиницу.
+    """
+    title = (vacancy.get("title") or "").strip().lower()
+    company = (vacancy.get("company") or "").strip().lower()
+    if not title or not company:
+        return ""
+    family = _source_family(vacancy.get("source"))
+    area = (vacancy.get("area") or vacancy.get("region") or "").strip().lower()
+    sql = "SELECT id, title, company, area, region, source FROM vacancies WHERE id <> ?"
+    for row in conn.execute(sql, (vacancy.get("id") or "",)):
+        if _source_family(row["source"]) == family:
+            continue
+        if (row["title"] or "").strip().lower() != title:
+            continue
+        if (row["company"] or "").strip().lower() != company:
+            continue
+        row_area = ((row["area"] or row["region"]) or "").strip().lower()
+        if row_area and area and row_area != area:
+            continue
+        return row["id"]
+    return ""
+
+
 def upsert_vacancy(conn, v, commit=True):
     conn.execute(
         """INSERT INTO vacancies (id, title, company, url, salary_from, salary_to, currency,

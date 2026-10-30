@@ -14,7 +14,8 @@ import traceback
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import areas, guide, jobs, llm, queue, resume, scoring, storage, web_sessions, vacancy_filters
+from . import (areas, guide, jobs, llm, queue, resume, scoring, sources, storage,
+               web_sessions, vacancy_filters)
 from .config import BASE, get_settings, load_profile
 
 CSS = """
@@ -382,6 +383,33 @@ def _resolve_region(value):
     return (str(found) if found else "", text)
 
 
+def _sources_value(value):
+    """Выбор площадок для сбора: '' -> 'hh', мусор отбрасываем, 'all' главнее."""
+    parts = []
+    for part in str(value or "").split(","):
+        part = part.strip().lower()
+        if part in ("hh", "all") or part in sources.SOURCES:
+            if part not in parts:
+                parts.append(part)
+    if not parts:
+        parts = ["hh"]
+    return "all" if "all" in parts else ",".join(parts)
+
+
+def _sources_options(current):
+    """Опции селекта площадок: hh, все, и каждая площадка по отдельности."""
+    items = [("hh", "только hh.ru"), ("all", "все площадки")]
+    items += [(name, sources.TITLES.get(name, name)) for name in sources.SOURCES]
+    return "".join("<option value='%s'%s>%s</option>"
+                   % (value, " selected" if value == current else "", esc(label))
+                   for value, label in items)
+
+
+def _source_title(value):
+    """Подпись площадки по метке источника: html/api -> hh.ru, habr -> Хабр Карьера."""
+    return sources.TITLES.get(storage._source_family(value), value or "hh.ru")
+
+
 def _action_form(action, label, css, region_value, hidden_filters, confirm=False,
                  title="", onclick=""):
     """Кнопка действия отдельной POST-формой с явным регионом.
@@ -409,8 +437,9 @@ REGION_SYNC_JS = (
     "})();</script>")
 
 
-def render_index(conn, limit, msg="", region="", filters=None, page=1):
+def render_index(conn, limit, msg="", region="", filters=None, page=1, sources=""):
     region_value, region_name = _resolve_region(region)
+    sources_value = _sources_value(sources)
     filters = vacancy_filters.selected(filters or {})
     all_rows = queue.next_batch(conn, limit=None, region=region_name)
     matching_rows = vacancy_filters.apply(all_rows, filters)
@@ -423,6 +452,8 @@ def render_index(conn, limit, msg="", region="", filters=None, page=1):
     rows = matching_rows[(page - 1) * limit:page * limit]
     hidden_filters = "".join("<input type='hidden' name='f_%s' value='%s'>" % (col, esc(v))
                              for col, values in filters.items() for v in values)
+    # выбор площадок едет вместе с кнопками действий, как и регион
+    hidden_filters += "<input type='hidden' name='sources' value='%s'>" % esc(sources_value)
     st = storage.stats(conn)
     left = queue.can_send_today(conn, get_settings().daily_limit)
     # Селект региона — в GET-форме (он же фильтр списка), кнопки действий —
@@ -435,7 +466,10 @@ def render_index(conn, limit, msg="", region="", filters=None, page=1):
         "<div class='toolbar'>",
         "<form method='get' action='/' class='region-form'>", hidden_filters,
         "<select name='region' id='region-select' title='регион: сбор и фильтр списка'",
-        " onchange='this.form.submit()'>", region_options, "</select></form>",
+        " onchange='this.form.submit()'>", region_options, "</select>",
+        "<select name='sources' id='sources-select' title='площадки для сбора вакансий'",
+        " onchange='this.form.submit()'>", _sources_options(sources_value),
+        "</select></form>",
         "<span class='buttons'>",
         _action_form("/run/collect", "Собрать вакансии", " primary",
                      region_value, hidden_filters),
@@ -926,7 +960,7 @@ def wait_run(timeout=60.0):
     return False
 
 
-def start_action(kind, area=None, vacancy_id=""):
+def start_action(kind, area=None, vacancy_id="", sources=None):
     """Запускает пакетное действие в фоне и сразу возвращает отчёт для страницы.
 
     Синхронный прогон держал HTTP-соединение минутами: при обрыве сети браузер
@@ -944,7 +978,8 @@ def start_action(kind, area=None, vacancy_id=""):
         try:
             RUN["report"] = _run_action(kind, conn, area=area, vacancy_id=vacancy_id,
                                         on_item=_run_tick,
-                                        should_stop=lambda: bool(RUN.get("stop")))
+                                        should_stop=lambda: bool(RUN.get("stop")),
+                                        sources=sources)
         except Exception as exc:  # ошибка прогона не должна ломать страницу
             RUN["error"] = "%s: %s" % (type(exc).__name__, exc)
             traceback.print_exc()
@@ -1042,11 +1077,12 @@ def run_progress():
     return ""
 
 
-def run_action(kind, conn, limit=None, area=None, vacancy_id="", on_item=None):
+def run_action(kind, conn, limit=None, area=None, vacancy_id="", on_item=None, sources=None):
     """Выполняет действие из веб-интерфейса: collect / score / letters. Возвращает отчёт.
 
     area — id региона hh для сбора (пусто — регионы из настроек, по умолчанию вся Россия).
     vacancy_id — действие только для одной вакансии (кнопки в карточке).
+    sources — площадки для сбора («hh», «all», «hh,habr», …); None — из настроек.
 
     Одновременно идёт только один прогон: повторные клики по «Оценить» раньше
     запускали второй поток, тот падал на блокировке SQLite, и браузер получал
@@ -1056,13 +1092,13 @@ def run_action(kind, conn, limit=None, area=None, vacancy_id="", on_item=None):
         return RUN_BUSY
     try:
         return _run_action(kind, conn, limit=limit, area=area, vacancy_id=vacancy_id,
-                           on_item=on_item)
+                           on_item=on_item, sources=sources)
     finally:
         RUN_LOCK.release()
 
 
 def _run_action(kind, conn, limit=None, area=None, vacancy_id="", on_item=None,
-                should_stop=None):
+                should_stop=None, sources=None):
     s = get_settings()
     tick = on_item or (lambda *args: None)
 
@@ -1078,7 +1114,8 @@ def _run_action(kind, conn, limit=None, area=None, vacancy_id="", on_item=None,
         saved, found, source, notes = jobs.collect_queries(conn, queries, s, limit=lim,
                                                            area_ids=area_ids, on_item=tick,
                                                            total_limit=total_lim or None,
-                                                           should_stop=should_stop)
+                                                           should_stop=should_stop,
+                                                           sources=sources)
         where = areas.name_of(area_ids[0]) if area_ids else "вся Россия"
         storage.log_event(conn, "collect", {"queries": queries, "saved": saved,
                                             "found": found, "source": source,
@@ -1236,7 +1273,7 @@ def render_card(conn, vacancy_id, msg="", show_rules=False):
         ("<div class='meta'>%s</div>" % esc(run_progress())) if run_progress() else "",
         run_indicator(),
         "<div class='card'><div class='meta'><b>%s</b>%s · %s · опыт: %s · зарплата: %s · "
-        "<span class='score %s'>оценка %s</span> %s</div>"
+        "<span class='score %s'>оценка %s</span> %s%s</div>"
         "<div class='meta'>Почему такая оценка:</div>%s%s"
         "<div class='actions'>"
         "<button class='btn' type='button' onclick=\"document.getElementById('rules').showModal()\">"
@@ -1250,7 +1287,8 @@ def render_card(conn, vacancy_id, msg="", show_rules=False):
             grade_line,
             verdict_badge(row["verdict"]), reasons_html,
             ("<div class='meta'><b>Что подчеркнуть в письме:</b> %s</div>" % esc(focus_text))
-            if focus_text else ""),
+            if focus_text else "",
+            " · источник: <b>%s</b>" % esc(_source_title(row["source"]))),
         "<div class='card'><div class='reasons'><b>Сопоставление с профилем:</b> %s</div></div>" % esc(match_line),
         "<div class='card'><div class='meta'><b>Оценка</b> — пересчитать оценку этой вакансии "
         "(правила + LLM) и показать правила</div>"
@@ -1599,7 +1637,8 @@ class Handler(BaseHTTPRequestHandler):
                 msg = qs.get("msg", [""])[0]
                 region = qs.get("region", [""])[0]
                 self._send(render_index(conn, limit=50, msg=msg, region=region,
-                                        filters=qs, page=qs.get("page", ["1"])[0]))
+                                        filters=qs, page=qs.get("page", ["1"])[0],
+                                        sources=qs.get("sources", [""])[0]))
             elif path.startswith("/v/"):
                 qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
                 msg = qs.get("msg", [""])[0]
@@ -1690,6 +1729,9 @@ class Handler(BaseHTTPRequestHandler):
                 form = self._form()
                 # единый селект региона (id субъекта); поле area — совместимость со старыми формами
                 value = (form.get("region") or form.get("area") or [""])[0]
+                sources_raw = (form.get("sources") or [""])[0]
+                picked_sources = tuple(part.strip() for part in sources_raw.split(",")
+                                       if part.strip()) or None
                 area_id, _region = _resolve_region(value)
                 if kind == "collect" and not area_id:
                     # раньше здесь молча подставлялась «вся Россия»: при потере региона
@@ -1700,19 +1742,21 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 if target:
                     # одна вакансия: быстрый путь, ответ сразу с результатом
-                    report = run_action(kind, conn, area=area_id, vacancy_id=target)
+                    report = run_action(kind, conn, area=area_id, vacancy_id=target,
+                                        sources=picked_sources)
                 else:
                     # пакетная работа (сбор, оценка всех, письма) — в фоне
-                    report = start_action(kind, area=area_id)
+                    report = start_action(kind, area=area_id, sources=picked_sources)
                     if kind == "collect":
                         # регион виден сразу в сообщении — ошибку выбора заметно до прогона
                         name = ("вся Россия" if str(area_id) == "113"
                                 else areas.name_of(int(area_id)) or area_id)
                         report += " · регион: %s" % name
+                        report += " · площадки: %s" % (sources_raw or "hh")
                 back = "/v/%s" % urllib.parse.quote(target) if target else "/"
                 extra = "&rated=1" if target and kind == "score" else ""
                 preserved = {key: values for key, values in form.items()
-                             if key == "region" or key.startswith("f_")}
+                             if key in ("region", "sources") or key.startswith("f_")}
                 suffix = ("&" + urllib.parse.urlencode(preserved, doseq=True)) if not target else ""
                 self._redirect(back + "?msg=" + urllib.parse.quote(report) + extra + suffix)
             elif path == "/profile":

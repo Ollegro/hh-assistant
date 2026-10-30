@@ -124,6 +124,8 @@ class Settings:
     web_auth_password: str = ""
     web_tls_cert: str = ""
     web_tls_key: str = ""
+    superjob_app_id: str = ""
+    collect_sources: str = "hh"
     profile: dict = field(default_factory=dict)
 
     def has_app_token(self):
@@ -212,6 +214,8 @@ def get_settings():
         web_auth_password=env.get("WEB_AUTH_PASSWORD", ""),
         web_tls_cert=env.get("WEB_TLS_CERT", "").strip(),
         web_tls_key=env.get("WEB_TLS_KEY", "").strip(),
+        superjob_app_id=env.get("SUPERJOB_APP_ID", "").strip(),
+        collect_sources=env.get("COLLECT_SOURCES", "hh").strip().lower() or "hh",
     )
     s.profile = load_profile()
     return s
