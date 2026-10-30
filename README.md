@@ -238,7 +238,7 @@ python tools/hh_api_token.py   # тот же отчёт в out/hh-api-check.txt
 `tools/compare_scores.py --limit 15` (правила против модели) и не закрывает окно с результатом.
 Отчёты дублируются в файлы `out/llm-check.txt` и `out/score-compare.txt` — их удобно
 приложить при разборе ошибки. Второй bat, **`Запустить тесты.bat`**, прогоняет
-`unittest` (184 теста), `tools/check_hh_server.py`, `tools/check_serve.py` и `stats`, отчёт — `out/regress.txt`.
+`unittest` (416 тестов), `tools/check_hh_server.py`, `tools/check_serve.py` и `stats`, отчёт — `out/regress.txt`.
 
 По умолчанию приложение работает офлайн: балл считают правила, письмо собирается из проверенных
 блоков. LLM подключается несколькими строками в `.env` (шаблон — `.env.example`):
@@ -283,7 +283,7 @@ python tools/check_llm.py     # настройки → связь с модел�
 | `python tools/check_llm.py` | LLM-контур: настройки → связь → скоринг → письмо; без ключа печатает инструкцию для `.env` |
 | `python tools/compare_scores.py` | сравнение правил и LLM на вакансиях из базы: баллы, расхождения, средние — для калибровки весов 0.45/0.55 |
 | `python cli.py api-check` / `tools/hh_api_token.py` | цепочка «токен → `/me` → `/vacancies`»; без токена печатает понятную инструкцию и не ходит в сеть |
-| `python -m unittest discover -s tests` | 224 теста (парсер и JSON-LD-регионы, matching, scoring, письма, LLM-контур, API-источник, пакетные действия `jobs`, воронка и статусы отклика, CSV, справочник регионов, редактор поисковых запросов, единый выбор региона и панель кнопок на главной, вход в веб-интерфейс) — OK |
+| `python -m unittest discover -s tests` | 416 тестов (парсер и JSON-LD-регионы, matching, scoring, письма и тон, LLM-контур, API-источник, площадки Хабр / SuperJob / «Работа России» / getmatch и дедупликация, пакетные действия `jobs`, воронка, CSV, справочник регионов, редактор поисковых запросов, единый выбор региона и площадок, панель кнопок на главной, вход в веб-интерфейс) — OK |
 
 Что дальше: вписать ключ LLM в `.env` (контур, диагностика `check_llm.py` и сравнение `compare_scores.py` — см. этап 4 в `PLAN.md`); воронка ответов (этап 5) уже работает — `python cli.py funnel`, `mark` и страница `/funnel`. Режим робота (Playwright) остаётся вне границ проекта.
 
@@ -361,7 +361,7 @@ APPLICATION-hh-assistant/     # приложение (stdlib-only) — коре�
                               #          storage, queue, analytics, jobs (пакетные действия), web, config, llm
   config/                     # profile.json (личный, в .gitignore), profile.example.json, queries.txt
   data/, out/                 # база SQLite, выгруженные письма и CSV (в .gitignore)
-  tests/                      # 210 юнит-тестов (unittest, stdlib) + fixtures/
+  tests/                      # 416 юнит-тестов (unittest, stdlib) + fixtures/
   tools/                      # лаунчер, проверки (сервер, serve, LLM, парсер, токен, скоринг)
   deploy/                     # размещение на сервере: install.sh, systemd-юнит, README по Selectel
   PLAN.md, DEVLOG.md, README.md, LICENSE, .gitignore
@@ -374,7 +374,7 @@ APPLICATION-hh-assistant/     # приложение (stdlib-only) — коре�
 
 ```bash
 cd APPLICATION-hh-assistant
-python -m unittest discover -s tests -v   # 210 тестов, без сети и без зависимостей
+python -m unittest discover -s tests -v   # 416 тестов, без сети (кроме помеченных), без зависимостей
 ```
 
 Проверяются: HTML-парсер на сохранённой фикстуре, сопоставление с профилем (`matching`),
