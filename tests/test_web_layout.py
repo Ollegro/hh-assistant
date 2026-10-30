@@ -278,6 +278,24 @@ class CollectFromToolbarTest(Base):
         self.assertIn("оценено новых", web.RUN["report"])
 
 
+class LongTokenLayoutTest(Base):
+    """Вёрстка не ломается от длинных строк без пробелов (мусор в данных, письма, ссылки)."""
+
+    def test_css_wraps_long_tokens(self):
+        for rule in ("tbody td{overflow-wrap:anywhere}",
+                     ".desc,.meta,.reasons{overflow-wrap:anywhere}",
+                     "textarea{width:100%;max-width:100%",
+                     "main{overflow-x:hidden}"):
+            self.assertIn(rule, web.CSS)
+
+    def test_card_with_very_long_token_still_renders(self):
+        token = "a" * 300
+        self.scored("1", title=token, company=token)
+        page = web.render_card(self.conn, "1")
+        self.assertIn("overflow-wrap:anywhere", page)
+        self.assertIn(token, page)      # текст на месте, переносится по CSS
+
+
 class BalanceBoxTest(Base):
     """Плашка баланса LLM видна и в списке (включая вторую страницу), и в карточке."""
 

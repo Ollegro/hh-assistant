@@ -34,8 +34,11 @@ table{display:block;overflow-x:auto;border-collapse:separate;border-spacing:0;wi
 background:rgba(255,255,255,.88);
 border:1px solid rgba(255,255,255,.70);border-radius:14px;box-shadow:0 10px 30px rgba(84,52,140,.12)}
 th,td{padding:9px 12px;border-bottom:1px solid rgba(120,90,170,.14);font-size:13.5px;text-align:left;vertical-align:top}
-/* длинные строки без пробелов (мусор из разметки, ссылки) не должны растягивать таблицу */
+/* длинные строки без пробелов (мусор из разметки, ссылки, письма) не должны
+   растягивать ни таблицу, ни карточку, ни страницу целиком */
 tbody td{overflow-wrap:anywhere}
+.card,.card p,.desc,.meta,.reasons{overflow-wrap:anywhere}
+main{overflow-x:hidden}
 th{background:rgba(250,247,255,.92);color:#5d5470;font-weight:600;white-space:nowrap}
 tr:last-child td{border-bottom:none}
 tbody tr:hover td{background:rgba(246,240,255,.92)}
@@ -67,7 +70,7 @@ td.vid{color:#5d5470;font-size:12.5px;white-space:nowrap}
 select{height:36px;padding:0 10px;border-radius:10px;border:1px solid rgba(120,90,170,.25);
 background:rgba(255,255,255,.92);color:#3a2d52;font-size:13px;font-family:inherit;line-height:1;
 max-width:100%}
-textarea{width:100%;min-height:420px;padding:12px;border:1px solid rgba(120,90,170,.22);border-radius:12px;
+textarea{width:100%;max-width:100%;min-height:420px;padding:12px;border:1px solid rgba(120,90,170,.22);border-radius:12px;
 background:rgba(255,255,255,.94);color:#2b2438;font-family:ui-monospace,Consolas,monospace;
 font-size:13px;line-height:1.5}
 .meta{margin:4px 0 12px;padding:10px 14px;border-radius:12px;background:rgba(255,255,255,.84);
