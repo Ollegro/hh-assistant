@@ -4,6 +4,45 @@
 
 ---
 
+## 30.10.2026 — IP-сертификат вынесен из общего certbot в `/etc/letsencrypt-ip`
+
+**Что сделано.** `deploy/letsencrypt-ip.sh` выпускает и продлевает `hh-ip` в собственном
+каталоге: `--config-dir /etc/letsencrypt-ip --work-dir /var/lib/letsencrypt-ip
+--logs-dir /var/log/letsencrypt-ip` — и в `certonly`, и в `ExecStart` таймера; хук берёт
+`live` из нового места. Прежний `hh-ip` удалён из `/etc/letsencrypt` с бэкапом
+`/root/certbot-backup-20261030-154828.tgz`.
+
+**Решение и почему.** Системный `certbot.timer` (certbot 2.9.0) падал каждые 12 часов:
+`Failed to renew certificate hh-ip … At least one of domains or ipaddrs parameter need to be
+not empty` → `1 renew failure(s)` → `status=1/FAILURE`. IP-сертификаты умеет только certbot
+5.4+, поэтому в 2.9 наш `hh-ip` выглядел «сертификатом без доменов». Разнесли состояние:
+доменные сертификаты остаются в `/etc/letsencrypt`, IP — в `/etc/letsencrypt-ip`; разные
+каталоги дают и разные lock-файлы, так что два таймера больше не мешают друг другу.
+Отказаться от IP-сертификата совсем (приложение за nginx по HTTP) не стали: nginx уже ходит
+на `https://127.0.0.1:8443` с `proxy_ssl_verify off`, но это меняет установку и деплой —
+отложено как отдельный вариант.
+
+**Проблема и как решена.** Первый боевой выпуск после `--dry-run` пропустился: `Certificate
+not yet due for renewal; no action taken` — учебный staging-сертификат занял то же имя и
+«жил» 6 дней. Теперь `--dry-run` удаляет учебную линию через `certbot delete`, но только
+если issuer содержит `STAGING`, иначе снёс бы рабочий сертификат.
+
+**Чем проверено.** `bash -n` — OK. На сервере: staging-выпуск (certbot 5.8.0, `Account
+registered` в новом каталоге) → удаление линии → боевой выпуск: issuer `CN = YE2`, SAN
+`IP Address:135.106.183.205`, срок 30.10 → 06.11; `config/tls.crt` побитово равен новому
+`live/hh-ip/fullchain.pem`; хук перезапустил сервис (15:47:04), `hh-assistant` — `active`,
+`/login` → `200`, `openssl s_client` на 8443 отдаёт новый сертификат.
+`systemctl start certbot.service` → exit 0 и `Deactivated successfully` (до правки —
+`status=1/FAILURE`), `certbot certificates` — пять доменных, `hh-ip` нет;
+`systemctl start hh-certbot-renew.service` — `Finished`, exit 0; повторный `--dry-run`
+боевой сертификат не тронул. Тесты проекта — **416 OK**.
+
+**Следующий шаг.** Дождаться штатного продления нашим таймером (03:30 и 15:30 UTC + до 10
+минут) — в журнале должно быть `Finished` без `renew failure`; при желании — вариант B
+(приложение по HTTP за nginx), тогда IP-сертификат не нужен вовсе.
+
+
+
 ## 30.10.2026 — сбор с четырёх площадок: Хабр Карьера, SuperJob, «Работа России», getmatch
 
 **Запрос владельца.** Добавить другие источники вакансий, кроме hh.ru: Хабр Карьера,

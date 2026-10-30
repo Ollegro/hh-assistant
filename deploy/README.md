@@ -113,7 +113,10 @@ to be not empty`; у двух certbot ещё и разные lock-файлы, п
 
 `--dry-run` (тренировка на staging) в конце сам удаляет учебную линию: иначе её
 сертификат с тем же именем «живёт» 6 дней и следующий боевой выпуск пропускается
-как `Certificate not yet due for renewal; no action taken`.
+как `Certificate not yet due for renewal; no action taken`. Удаление выполняется
+только для линии от staging-центра (проверка по issuer) — рабочий сертификат
+тренировка не сносит; если он ещё не истекает, `certonly` в режиме `--dry-run`
+просто пишет «not yet due», и это нормально.
 
 Проверка результата:
 

@@ -472,7 +472,7 @@ API SuperJob и «Работы России»); 3) диспетчер, деду�
 **Риски.** Парсеры Хабра и getmatch хрупкие (разметка/шаблон); у «Работы России» и getmatch
 регион фильтруется по названию субъекта, а не по id hh; лимиты площадок не документированы,
 поэтому пауза между запросами обязательна.
-## 19. 30.10.2026 — IP-сертификат `hh-ip` вынесен из общего `/etc/letsencrypt` (утверждено, выполняется)
+## 19. 30.10.2026 — IP-сертификат `hh-ip` вынесен из общего `/etc/letsencrypt` (утверждено, выполнено)
 
 **Откуда задача.** Системный `certbot.timer` (certbot 2.9.0) каждые 12 часов падает:
 `Failed to renew certificate hh-ip with error: At least one of domains or ipaddrs parameter
@@ -511,6 +511,23 @@ need to be not empty` → `1 renew failure(s)` → `status=1/FAILURE`. Прич�
    `systemctl start hh-certbot-renew.service` → `Deactivated successfully`;
    `/opt/certbot-ip/bin/certbot renew --dry-run` → OK.
 8. Коммит `Сертификат IP вынесен в /etc/letsencrypt-ip`, деплой, записи в `DEVLOG.md`.
+
+**Итоги (проверено на сервере 30.10.2026).**
+- Скрипт: `bash -n` без ошибок; staging-выпуск прошёл (certbot 5.8.0, новый каталог),
+  учебная линия удаляется автоматически.
+- Боевой сертификат: issuer `CN = YE2`, SAN `IP Address:135.106.183.205`, срок 30.10 → 06.11;
+  `config/tls.crt` побитово равен новому `live/hh-ip/fullchain.pem`; хук перезапустил сервис
+  (журнал 15:47:04), `hh-assistant` — `active`, `/login` → `200`.
+- `hh-certbot-renew.service`: `ExecStart=/opt/certbot-ip/bin/certbot renew --quiet --config-dir …`;
+  ручной прогон — `Finished`, exit 0.
+- Старый `hh-ip` удалён из `/etc/letsencrypt` (бэкап `/root/certbot-backup-20261030-154828.tgz`);
+  `certbot certificates` показывает пять доменных и не показывает `hh-ip`;
+  `systemctl start certbot.service` → exit 0, `Deactivated successfully` (до правки — `status=1/FAILURE`).
+- Гонка за lock снята: у двух certbot разные каталоги и разные lock-файлы, таймеры
+  `certbot.timer` и `hh-certbot-renew.timer` работают независимо друг от друга.
+- Найдено по ходу: staging-выпуск оставлял сертификат того же имени, и боевой запуск
+  пропускался как «not yet due»; `--dry-run` теперь удаляет учебную линию — только если
+  issuer содержит `STAGING`, иначе снёс бы рабочий сертификат.
 
 **Риски.** Одна перевыдача сертификата (лимиты LE для `shortlived` мягкие, но повторять
 подряд не стоит); если перевыдача не пройдёт — старый сертификат продолжает работать до 03.11,
