@@ -97,8 +97,14 @@ def search(query, area="", pages=1, per_page=50, pause=1.0, remote=False):
             region_names.append(name.lower())
 
     limit = max(1, min(int(per_page or 50), MAX_PER_PAGE))
+    wanted = limit
     found = []
-    for page in range(max(1, int(pages or 1))):
+    page = 0
+    # Регион у площадки в параметре `region` работает не для всех запросов,
+    # поэтому фильтруем на нашей стороне. Тогда одной страницы мало: нужный
+    # субъект может оказаться глубже — догружаем до 20 страниц.
+    max_pages = max(1, int(pages or 1)) * (20 if region_names else 1)
+    while page < max_pages and len(found) < wanted:
         params = {"limit": limit, "offset": page * limit}
         if query:
             params["text"] = query
@@ -110,14 +116,13 @@ def search(query, area="", pages=1, per_page=50, pause=1.0, remote=False):
         for wrapper in items:
             vacancy = vacancy_from_item(wrapper.get("vacancy") if isinstance(wrapper, dict) else {})
             if not vacancy["id"].endswith(":") and vacancy["title"]:
+                if region_names and not any(name in (vacancy["area"] or "").lower()
+                                            for name in region_names):
+                    continue
                 found.append(vacancy)
         if len(items) < limit:
             break
+        page += 1
         if pause:
             time.sleep(pause)
-
-    if region_names:
-        # у trudvsem нет справочника регионов hh: фильтруем по названию субъекта
-        found = [v for v in found
-                 if any(name in (v["area"] or "").lower() for name in region_names)]
-    return found
+    return found[:wanted]
