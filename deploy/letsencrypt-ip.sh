@@ -94,6 +94,16 @@ ARGS=(certonly --preferred-profile shortlived --webroot --webroot-path "$WEBROOT
 "$CERTBOT" "${ARGS[@]}"
 
 if [ "$DRY_RUN" = "1" ]; then
+    # Тренировка оставляет staging-сертификат с тем же именем, и следующий боевой
+    # запуск пропускается как «not yet due». Убираем учебную линию — но только
+    # если она действительно от staging-центра, иначе снесли бы рабочий сертификат.
+    LIVE="$IPCERT_DIR/live/$CERT_NAME"
+    if [ -f "$LIVE/cert.pem" ] \
+       && openssl x509 -noout -issuer -in "$LIVE/cert.pem" 2>/dev/null | grep -q "STAGING"; then
+        "$CERTBOT" delete --non-interactive --config-dir "$IPCERT_DIR" --work-dir "$IPWORK_DIR" \
+            --logs-dir "$IPLOG_DIR" --cert-name "$CERT_NAME" >/dev/null 2>&1 || true
+        echo "учебная (staging) линия удалена"
+    fi
     echo "тренировка на staging прошла: боевой сертификат не выдан"
     exit 0
 fi
