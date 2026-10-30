@@ -6,6 +6,7 @@
 если письмо уже есть (сгенерировано или написано вручную).
 """
 import os
+import re
 import sys
 import unittest
 
@@ -30,6 +31,46 @@ class SchoolGradeTest(unittest.TestCase):
         self.assertEqual(web.score_class(25), "s-low")    # 2
         self.assertEqual(web.score_class(5), "s-low")     # 1
         self.assertEqual(web.score_class(None), "s-low")
+
+
+class ButtonLabelsTest(Base):
+    """Единый стиль кнопок: подпись с большой буквы, в карточке первым — «Скопировать письмо».
+
+    Заказчик: «Все кнопки должны начинаться с большой буквы» и «кнопки открыть вакансию
+    и скопировать письмо поменять местами».
+    """
+
+    BTN = re.compile(r"class='btn[^']*'[^>]*>([^<]{1,60})</(?:a|button)>")
+
+    def setUp(self):
+        super().setUp()
+        self.scored("136935354", score=92, verdict="откликаться", title="AI-инженер")
+        storage.save_letter(self.conn, "136935354", "Здравствуйте! Текст письма.",
+                            model="offline")
+
+    def labels(self, page):
+        return [match.strip() for match in self.BTN.findall(page)]
+
+    def assert_capitalized(self, page, where):
+        for label in self.labels(page):
+            letters = [ch for ch in label if ch.isalpha()]
+            if letters and letters[0].islower():
+                self.fail("кнопка «%s» на странице «%s» начинается с маленькой буквы"
+                          % (label, where))
+
+    def test_list_page_buttons(self):
+        page = web.render_index(self.conn, 10)
+        self.assert_capitalized(page, "список")
+        self.assertIn(">Открыть</a>", page)
+
+    def test_card_buttons_and_order(self):
+        page = web.render_card(self.conn, "136935354")
+        self.assert_capitalized(page, "карточка")
+        self.assertLess(page.index("Скопировать письмо"), page.index("Открыть вакансию на hh"))
+
+    def test_help_and_profile_buttons(self):
+        self.assert_capitalized(web.render_help(), "руководство")
+        self.assert_capitalized(web.render_profile(), "профиль")
 
 
 class TableColumnsTest(Base):
@@ -126,7 +167,7 @@ class CardHeaderTest(Base):
         page = self.card()
         header = page.split("<header>", 1)[1].split("</header>", 1)[0]
         self.assertNotIn("Спецобъединение Юго-Запад", header)
-        self.assertIn("к списку", header)
+        self.assertIn("К списку", header)
 
     def test_browser_tab_title_has_title_and_company(self):
         page = self.card()

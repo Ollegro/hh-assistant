@@ -45,7 +45,7 @@ class FiltersTest(Base):
         self.assertIn("page=3", page)
         self.assertIn("region=113", page)
         self.assertNotIn("href='/v/target'", page)
-        self.assertEqual(page.count(">открыть</a>"), 10)
+        self.assertEqual(page.count(">Открыть</a>"), 10)
 
     def test_case_safe_html_and_multi_selection(self):
         self.scored("special", title="<script>alert(1)</script>", company="A&B")

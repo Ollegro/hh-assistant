@@ -123,6 +123,22 @@ class AdapterTest(unittest.TestCase):
         self.assertIn("Python", v["description"])
         self.assertEqual(v["skills"], [])
 
+    def test_salary_range_preferred_over_deprecated_salary(self):
+        """По спеке hh `salary` помечен deprecated, актуальное поле — `salary_range`."""
+        item = {"id": "1", "salary_range": {"from": 300000, "to": 350000, "currency": "RUR",
+                                            "gross": False, "mode": None, "frequency": None},
+                "salary": {"from": 100000, "to": 120000, "currency": "RUR"}}
+        v = api_adapter.vacancy_from_api(item)
+        self.assertEqual((v["salary_from"], v["salary_to"], v["currency"]),
+                         (300000, 350000, "RUR"))
+
+    def test_empty_salary_range_falls_back_to_salary(self):
+        item = {"id": "1", "salary_range": None,
+                "salary": {"from": 100000, "to": 120000, "currency": "EUR"}}
+        v = api_adapter.vacancy_from_api(item)
+        self.assertEqual((v["salary_from"], v["salary_to"], v["currency"]),
+                         (100000, 120000, "EUR"))
+
     def test_empty_item_does_not_break(self):
         v = api_adapter.vacancy_from_api({})
         self.assertEqual(v["id"], "")
@@ -193,6 +209,14 @@ class RequestTest(ApiBase):
         hh_api.get("/vacancies", {"text": "python"})
         hh_api.get("/vacancies", {"text": "python"})
         self.assertEqual(header(self.requests[1], "If-None-Match"), "W/\"1\"")
+
+    def test_remote_filter_uses_documented_work_format(self):
+        """Удалёнка фильтруется документированным `work_format`, а не deprecated `schedule`."""
+        self.serve(FakeResponse({"found": 1, "items": []}))
+        hh_api.search_vacancies(text="python", remote=True, per_page=1, pages=1)
+        url = self.requests[0].full_url
+        self.assertIn("work_format=REMOTE", url)
+        self.assertNotIn("schedule=", url)
 
     def test_retry_on_429(self):
         self.serve(http_error(429, {"errors": [{"type": "limit_exceeded"}]}, {"Retry-After": "0"}),

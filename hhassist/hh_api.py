@@ -262,7 +262,9 @@ def search_vacancies(text=None, area=None, pages=1, per_page=50, pause=None, rem
     for page in range(pages):
         params = {"text": text, "area": area, "page": page, "per_page": per_page}
         if remote:
-            params["schedule"] = "remote"
+            # work_format — документированный параметр; schedule в спецификации
+            # помечен deprecated (раздел «Недокументированные поля и параметры»).
+            params["work_format"] = "REMOTE"
         params.update(filters)
         batch = get("/vacancies", params, use_cache=False).get("items") or []
         items.extend(batch)

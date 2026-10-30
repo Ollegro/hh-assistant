@@ -34,6 +34,8 @@ table{display:block;overflow-x:auto;border-collapse:separate;border-spacing:0;wi
 background:rgba(255,255,255,.88);
 border:1px solid rgba(255,255,255,.70);border-radius:14px;box-shadow:0 10px 30px rgba(84,52,140,.12)}
 th,td{padding:9px 12px;border-bottom:1px solid rgba(120,90,170,.14);font-size:13.5px;text-align:left;vertical-align:top}
+/* длинные строки без пробелов (мусор из разметки, ссылки) не должны растягивать таблицу */
+tbody td{overflow-wrap:anywhere}
 th{background:rgba(250,247,255,.92);color:#5d5470;font-weight:600;white-space:nowrap}
 tr:last-child td{border-bottom:none}
 tbody tr:hover td{background:rgba(246,240,255,.92)}
@@ -534,7 +536,7 @@ def render_index(conn, limit, msg="", region="", filters=None, page=1):
             "<td>%s</td><td>%s</td><td>%s</td><td>%s</td>"
             "<td>%s</td><td>%s</td><td class='letter'>%s</td>"
             "<td><a class='btn' target='_blank' rel='noopener'"
-            " href='/v/%s'>открыть</a></td></tr>" % (
+            " href='/v/%s'>Открыть</a></td></tr>" % (
                 esc(r["id"]), grade_cell(r), verdict_badge(r["verdict"]),
                 esc(r["title"]), esc(r["company"]), esc(r["area"] or r["region"]),
                 esc(r["work_format"]), esc(r["experience"]),
@@ -796,7 +798,7 @@ def render_profile(msg="", fields=None, method="", note="", diff=None):
         "<meta name='viewport' content='width=device-width, initial-scale=1'>"
         "<title>Профиль — hh-assistant</title><style>%s</style></head><body>" % CSS,
         "<header><b>hh-assistant</b><span>профиль соискателя</span>"
-        "<span style='flex:1'></span><a class='btn' href='/'>← к вакансиям</a></header><main>",
+        "<span style='flex:1'></span><a class='btn' href='/'>← К вакансиям</a></header><main>",
     ]
     if msg:
         parts.append("<div class='card'>%s</div>" % esc(msg))
@@ -887,7 +889,7 @@ def render_help():
         "<meta name='viewport' content='width=device-width, initial-scale=1'>",
         "<title>%s — hh-assistant</title><style>%s</style></head><body>" % (guide.TITLE, CSS),
         "<header><b>hh-assistant</b><span>руководство пользователя</span>",
-        "<span style='flex:1'></span><a class='btn' href='/'>← к вакансиям</a></header><main>",
+        "<span style='flex:1'></span><a class='btn' href='/'>← К вакансиям</a></header><main>",
         guide.render(),
         "</main></body></html>",
     ])
@@ -1234,7 +1236,7 @@ def render_card(conn, vacancy_id, msg="", show_rules=False):
         + ("<meta http-equiv='refresh' content='5'>" if RUN["running"] else "") +
         "<title>%s — %s</title><style>%s</style></head><body>" % (
             esc(row["title"]), esc(row["company"] or "hh.ru"), CSS),
-        "<header><b><a href='/'>← к списку</a></b><span>карточка вакансии</span></header><main>",
+        "<header><b><a href='/'>← К списку</a></b><span>карточка вакансии</span></header><main>",
         ("<div class='card'>%s</div>" % esc(msg)) if msg else "",
         ("<div class='meta'>%s</div>" % esc(run_progress())) if run_progress() else "",
         run_indicator(),
@@ -1275,9 +1277,9 @@ def render_card(conn, vacancy_id, msg="", show_rules=False):
         "<button class='btn' type='submit'>Отказ</button></form>"
         "</div></div>" % (esc(status_line), esc(row["id"]), esc(row["id"]), esc(row["id"])),
         "<div class='actions'>",
-        "<a class='btn primary' target='_blank' rel='noopener' href='%s'>Открыть вакансию на hh</a>" % esc(row["url"]),
         "<button class='btn' onclick=\"navigator.clipboard.writeText(document.getElementById('letter').value);"
-        "this.textContent='скопировано'\">Скопировать письмо</button>",
+        "this.textContent='Скопировано'\">Скопировать письмо</button>",
+        "<a class='btn primary' target='_blank' rel='noopener' href='%s'>Открыть вакансию на hh</a>" % esc(row["url"]),
         "<form method='post' action='/mark/%s' style='display:inline'>"
         "<button class='btn' type='submit'>Отметить отправленным</button></form>" % esc(row["id"]),
         "<form method='post' action='/skip/%s' style='display:inline'>"
@@ -1397,7 +1399,7 @@ class Handler(BaseHTTPRequestHandler):
                            "</head><body><main><div class='card' style='margin-top:10vh'>"
                            "<b>Не получилось выполнить запрос</b>"
                            "<p style='color:#5d5470'>" + esc(text) + "</p>"
-                           "<div class='actions'><a class='btn' href='/'>← к списку</a></div>"
+                           "<div class='actions'><a class='btn' href='/'>← К списку</a></div>"
                            "</div></main></body></html>", status=500)
         except OSError:
             pass
@@ -1634,7 +1636,7 @@ class Handler(BaseHTTPRequestHandler):
                            "<meta name='viewport' content='width=device-width, initial-scale=1'>"
                            "<title>Экспорт писем</title><style>" + CSS + "</style></head><body>"
                            "<main><div class='card'>Экспортировано писем: <b>%d</b> в %s</div>"
-                           "<div class='actions'><a class='btn' href='/'>← назад</a></div>"
+                           "<div class='actions'><a class='btn' href='/'>← Назад</a></div>"
                            "</main></body></html>" % (made, esc(out_dir)))
             elif path == "/profile":
                 qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)

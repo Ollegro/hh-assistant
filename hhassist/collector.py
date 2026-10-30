@@ -235,6 +235,27 @@ def _area(html_text):
     return city[:120], area_id, region[:120]
 
 
+COMPANY_JUNK = ("vacancyview", "&quot;", '":', "{", "}", "function(", "window.")
+
+
+def _clean_company(value):
+    """Название компании: отсекаем склейки из служебного JSON страницы hh.
+
+    Регулярка «работа в компании …» иногда уезжает в JS-конфиг вакансии и тянет
+    оттуда кусок вида `{0}","vacancyview.titleCompensation":…`. Такая «компания»
+    растягивала таблицу и ломала вёрстку страницы (видно было на второй странице).
+    """
+    text = clean(value or "")
+    if not text:
+        return ""
+    low = text.lower()
+    if any(marker in low for marker in COMPANY_JUNK):
+        return ""
+    if len(text) > 40 and " " not in text:
+        return ""
+    return text[:120]
+
+
 def parse_vacancy(html_text, vacancy_id):
     """Разбирает карточку вакансии в нормализованный словарь."""
     head = clean(html_text[:120000])[:4000]
@@ -247,11 +268,11 @@ def parse_vacancy(html_text, vacancy_id):
         title = re.sub(r"\s+в\s+[^,]+,?\s*работа в компании.*$", "", title).strip()
 
     company = ""
-    m = re.search(r"работа в компании\s+([^<]+)", html_lib.unescape(html_text))
+    m = re.search(r"работа в компании\s+([^<]{1,120})", html_lib.unescape(html_text))
     if m:
-        company = clean(m.group(1))[:120]
+        company = _clean_company(m.group(1))
     if not company:
-        company = clean(_find(html_text, r'data-qa="vacancy-company-name"[^>]*>(.*?)<'))
+        company = _clean_company(_find(html_text, r'data-qa="vacancy-company-name"[^>]*>(.*?)<'))
 
     salary_raw = clean(_find(html_text, r'data-qa="vacancy-salary"[^>]*>(.*?)</'))
     if not salary_raw:

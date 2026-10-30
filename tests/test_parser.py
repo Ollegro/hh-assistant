@@ -46,6 +46,30 @@ class ParseVacancyTest(unittest.TestCase):
         self.assertEqual(self.v["source"], "html")
 
 
+class CompanyJunkTest(unittest.TestCase):
+    """«Компания» из служебного JSON hh не должна попадать в базу и в таблицу.
+
+    Реальная вакансия 138762809: регулярка «работа в компании …» уехала в JS-конфиг
+    и вытащила оттуда `{0}","vacancyview.titleCompensation":…` — длинная строка без
+    пробелов растягивала таблицу, и страница выглядела «сломанной».
+    """
+
+    def test_rejects_json_garbage(self):
+        junk = ('{0}","vacancyview.titleCompensation":"Зарплата",'
+                '"vacancyview.titleCompensationFrom":"от",')
+        self.assertEqual(collector._clean_company(junk), "")
+
+    def test_rejects_long_token_without_spaces(self):
+        self.assertEqual(collector._clean_company("a" * 60), "")
+
+    def test_keeps_normal_name(self):
+        for name in ("Ак Барс Цифровые Технологии", "ООО «Ромашка»", "VK"):
+            self.assertEqual(collector._clean_company(name), name)
+
+    def test_limits_length(self):
+        self.assertEqual(len(collector._clean_company("Большая компания " * 20)), 120)
+
+
 class AreaTest(unittest.TestCase):
     """Место вакансии: блок `area` самой вакансии важнее адреса работодателя.
 

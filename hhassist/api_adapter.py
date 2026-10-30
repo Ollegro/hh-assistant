@@ -35,11 +35,8 @@ def _text(value):
     return value.strip() if isinstance(value, str) else ""
 
 
-def _salary(item):
-    """(from, to, currency) из item["salary"]."""
-    salary = item.get("salary") or {}
-    if not isinstance(salary, dict):
-        return None, None, ""
+def _salary_values(salary):
+    """(from, to, currency) из одного объекта вилки."""
     try:
         salary_from = int(salary["from"]) if salary.get("from") is not None else None
     except (TypeError, ValueError):
@@ -51,8 +48,29 @@ def _salary(item):
     return salary_from, salary_to, _text(salary.get("currency"))
 
 
+def _salary(item):
+    """(from, to, currency): сначала item["salary_range"], затем item["salary"].
+
+    По документации hh поле `salary` помечено deprecated — актуальное `salary_range`
+    (те же from/to/currency плюс gross, mode, frequency). `salary_range` бывает null,
+    поэтому старый ключ остаётся резервом, чтобы вилка не пропадала.
+    """
+    for key in ("salary_range", "salary"):
+        data = item.get(key)
+        if not isinstance(data, dict) or not data:
+            continue
+        values = _salary_values(data)
+        if values[0] is not None or values[1] is not None or values[2]:
+            return values
+    return None, None, ""
+
+
 def _work_format(item):
-    """Формат работы строкой: work_format -> schedule -> пусто."""
+    """Формат работы строкой: work_format -> schedule (deprecated) -> пусто.
+
+    `work_format` — актуальное поле схемы; `schedule` hh помечает deprecated и держит
+    ради совместимости, поэтому читаем его только последним резервом.
+    """
     parts = []
     for entry in item.get("work_format") or []:
         if isinstance(entry, dict):
