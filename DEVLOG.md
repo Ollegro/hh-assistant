@@ -45,6 +45,13 @@ registered` в новом каталоге) → удаление линии → 
 (`Non-interactive renewal: random delay of … seconds`), поэтому в `ExecStart` таймера
 добавлен `--no-random-sleep-on-renew` (задержку и так даёт `RandomizedDelaySec=600`).
 
+**Прогон обновлённого юнита (01.11.2026, 02:22 UTC).** Дожидаться 03:37 не стали — запустили
+тот же юнит вручную: `systemctl start hh-certbot-renew.service` → код 0, `Result=success`,
+`ExecMainStatus=0`; журнал `Starting → Deactivated successfully → Finished` за одну секунду;
+в последних 40 строках нет `fail`/`error`/`renew failure`/`Another instance`. Сертификат не
+тронут (`notAfter=Nov 6`), `tls.crt` совпадает с `live/hh-ip/fullchain.pem`, служба `active`,
+`/login` → `200`. Штатный запуск таймера — 01.11 03:37:51 UTC.
+
 **Следующий шаг.** Дождаться штатного продления нашим таймером (03:30 и 15:30 UTC + до 10
 минут) — в журнале должно быть `Finished` без `renew failure`; при желании — вариант B
 (приложение по HTTP за nginx), тогда IP-сертификат не нужен вовсе.
