@@ -37,6 +37,14 @@ registered` в новом каталоге) → удаление линии → 
 `systemctl start hh-certbot-renew.service` — `Finished`, exit 0; повторный `--dry-run`
 боевой сертификат не тронул. Тесты проекта — **416 OK**.
 
+**Проверка холостого продления (01.11.2026).** Оба таймера после правки отработали без
+ошибок: `hh-certbot-renew` — 31.10 15:34 `Finished`, системный `certbot.service` —
+01.11 01:58 `Deactivated successfully` (в журнале за сутки уровень `err` пуст). Холостое
+`renew --dry-run` по IP-сертификату: `Congratulations, all simulated renewals succeeded`.
+Попутно выяснилось, что «зависание» на 5–10 минут — это встроенная случайная пауза certbot
+(`Non-interactive renewal: random delay of … seconds`), поэтому в `ExecStart` таймера
+добавлен `--no-random-sleep-on-renew` (задержку и так даёт `RandomizedDelaySec=600`).
+
 **Следующий шаг.** Дождаться штатного продления нашим таймером (03:30 и 15:30 UTC + до 10
 минут) — в журнале должно быть `Finished` без `renew failure`; при желании — вариант B
 (приложение по HTTP за nginx), тогда IP-сертификат не нужен вовсе.

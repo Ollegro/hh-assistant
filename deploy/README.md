@@ -123,10 +123,15 @@ to be not empty`; у двух certbot ещё и разные lock-файлы, п
 ```bash
 openssl s_client -connect <IP>:8443 </dev/null 2>/dev/null | openssl x509 -noout -issuer -dates
 systemctl list-timers hh-certbot-renew.timer --no-pager
-/opt/certbot-ip/bin/certbot renew --dry-run --config-dir /etc/letsencrypt-ip \
-    --work-dir /var/lib/letsencrypt-ip --logs-dir /var/log/letsencrypt-ip
+/opt/certbot-ip/bin/certbot renew --dry-run --no-random-sleep-on-renew \
+    --config-dir /etc/letsencrypt-ip --work-dir /var/lib/letsencrypt-ip \
+    --logs-dir /var/log/letsencrypt-ip
 systemctl start certbot.service && echo "системный certbot: без ошибок"
 ```
+
+Без `--no-random-sleep-on-renew` certbot перед продлением спит случайные 5–10 минут
+(в отладочном журнале: `Non-interactive renewal: random delay of … seconds`) — это не
+зависание. В таймере флаг стоит: задержку и так даёт `RandomizedDelaySec`.
 
 Если порт 80 занят веб-сервером (часто `nginx`), нужен именно **webroot его
 каталога**, а не `--standalone`: `--standalone` требует освободить 80-й порт.

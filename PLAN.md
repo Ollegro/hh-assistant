@@ -518,8 +518,8 @@ need to be not empty` → `1 renew failure(s)` → `status=1/FAILURE`. Прич�
 - Боевой сертификат: issuer `CN = YE2`, SAN `IP Address:135.106.183.205`, срок 30.10 → 06.11;
   `config/tls.crt` побитово равен новому `live/hh-ip/fullchain.pem`; хук перезапустил сервис
   (журнал 15:47:04), `hh-assistant` — `active`, `/login` → `200`.
-- `hh-certbot-renew.service`: `ExecStart=/opt/certbot-ip/bin/certbot renew --quiet --config-dir …`;
-  ручной прогон — `Finished`, exit 0.
+- `hh-certbot-renew.service`: `ExecStart=/opt/certbot-ip/bin/certbot renew --quiet --no-random-sleep-on-renew --config-dir …`;
+  ручной прогон — `Finished`, exit 0; холостое продление 01.11 — `all simulated renewals succeeded`.
 - Старый `hh-ip` удалён из `/etc/letsencrypt` (бэкап `/root/certbot-backup-20261030-154828.tgz`);
   `certbot certificates` показывает пять доменных и не показывает `hh-ip`;
   `systemctl start certbot.service` → exit 0, `Deactivated successfully` (до правки — `status=1/FAILURE`).

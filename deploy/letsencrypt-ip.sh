@@ -114,7 +114,7 @@ cat > /etc/systemd/system/hh-certbot-renew.service <<UNITEOF
 Description=Продление сертификата Let's Encrypt для hh-assistant (IP)
 [Service]
 Type=oneshot
-ExecStart=$CERTBOT renew --quiet --config-dir $IPCERT_DIR --work-dir $IPWORK_DIR --logs-dir $IPLOG_DIR --deploy-hook $HOOK
+ExecStart=$CERTBOT renew --quiet --no-random-sleep-on-renew --config-dir $IPCERT_DIR --work-dir $IPWORK_DIR --logs-dir $IPLOG_DIR --deploy-hook $HOOK
 UNITEOF
 cat > /etc/systemd/system/hh-certbot-renew.timer <<'UNITEOF'
 [Unit]
