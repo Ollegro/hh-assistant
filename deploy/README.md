@@ -133,6 +133,11 @@ systemctl start certbot.service && echo "системный certbot: без ош
 (в отладочном журнале: `Non-interactive renewal: random delay of … seconds`) — это не
 зависание. В таймере флаг стоит: задержку и так даёт `RandomizedDelaySec`.
 
+Проверять сайт локально нужно **по имени**: `curl -s -o /dev/null -w '%{http_code}\n'
+https://hh.jobsearch-ai.ru/login`. Запрос вида `curl https://127.0.0.1/login -H 'Host: …'`
+получает `000`: SNI остаётся `127.0.0.1`, попадает в default-сервер с
+`ssl_reject_handshake on`, и nginx закрывает соединение — это защита, а не сбой.
+
 Если порт 80 занят веб-сервером (часто `nginx`), нужен именно **webroot его
 каталога**, а не `--standalone`: `--standalone` требует освободить 80-й порт.
 
