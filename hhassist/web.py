@@ -14,7 +14,7 @@ import traceback
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import (areas, guide, jobs, llm, queue, resume, scoring, sources, storage,
+from . import (areas, guide, jobs, llm, manual, queue, resume, scoring, sources, storage,
                web_sessions, vacancy_filters)
 from .config import BASE, get_settings, load_profile
 
@@ -559,6 +559,7 @@ def render_index(conn, limit, msg="", region="", filters=None, page=1, sources="
             st["sent_today"], left, esc(llm.describe(get_settings()))),
         toolbar,
         _queries_block(),
+        _manual_block(),
     ]
     progress = run_progress()
     if progress:
@@ -883,6 +884,67 @@ def _profile_rows(profile):
          or "—"),
         ("Резюме загружено", profile.get("resume_updated_at") or "ещё не загружалось"),
     ]
+
+
+def _manual_block():
+    """Форма «Добавить вакансию вручную» (свёрнута: нужна редко, но всегда под рукой).
+
+    Зачем: сбор по запросам видит не всё — вакансию могут прислать ссылкой в мессенджере.
+    Обязательны только название и описание; остальное можно не заполнять, если это ссылка
+    на hh.ru — карточка дополнит поля сама.
+    """
+    return (
+        "<details class='card manual-add'><summary><b>Добавить вакансию вручную</b>"
+        "<span class='meta'> — ссылка на hh.ru и/или описание; оценка и письмо работают "
+        "как обычно</span></summary>"
+        "<form method='post' action='/manual'>"
+        "<div class='actions'><input type='url' name='url' placeholder='https://hh.ru/vacancy/…' "
+        "style='flex:1;min-width:240px'>"
+        "<input type='text' name='title' placeholder='название вакансии' style='flex:1'>"
+        "<input type='text' name='company' placeholder='компания' style='flex:1'></div>"
+        "<textarea class='resume-text' name='description' placeholder='Текст вакансии: "
+        "обязанности, требования. По нему считаются оценка и письмо. Если заполнить только "
+        "ссылку на hh.ru — описание возьмётся со страницы.'></textarea>"
+        "<div class='actions'>"
+        "<input type='text' name='salary' placeholder='зарплата: 120000-180000' style='width:210px'>"
+        "<input type='text' name='manual_city' placeholder='город (Москва)' "
+        "style='width:170px'>"
+        "<button class='btn primary' type='submit'>Добавить в базу</button>"
+        "<span class='meta'>повторное добавление того же объявления дубль не создаст</span>"
+        "</div></form></details>")
+
+
+def add_manual(conn, form):
+    """Сохраняет вакансию, добавленную вручную. Возвращает (сообщение, id или '')."""
+    def field(name):
+        return (form.get(name) or [""])[0].strip()
+
+    vacancy, note = manual.add(
+        url=field("url"), title=field("title"), company=field("company"),
+        description=field("description"), salary=field("salary"),
+        area=field("manual_city") or field("region"),
+        region=field("manual_city") or field("region"))
+    problems = manual.validate(vacancy)
+    if not vacancy.get("url") and not vacancy.get("description"):
+        problems.append("нужна ссылка или описание — иначе нечего оценивать")
+    if problems:
+        return "не добавлено: " + "; ".join(problems), ""
+    existing = conn.execute("SELECT id FROM vacancies WHERE id = ?", (vacancy["id"],)).fetchone()
+    storage.upsert_vacancy(conn, vacancy)
+    dup = storage.find_duplicate(conn, vacancy)
+    storage.log_event(conn, "manual_add", {"vacancy_id": vacancy["id"],
+                                           "source": vacancy.get("source", ""),
+                                           "duplicate_of": dup or ""})
+    if existing:
+        report = "вакансия «%s» уже была в базе — данные обновлены" % vacancy["title"]
+    else:
+        report = "добавлено: «%s» · %s" % (vacancy["title"],
+                                           vacancy.get("company") or "компания не указана")
+    if note:
+        report += " · " + note
+    if dup:
+        report += " · похожая вакансия уже есть: %s" % dup
+    return report, vacancy["id"]
 
 
 def render_profile(msg="", fields=None, method="", note="", diff=None):
@@ -1703,10 +1765,13 @@ class Handler(BaseHTTPRequestHandler):
                 qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
                 msg = qs.get("msg", [""])[0]
                 show_rules = qs.get("rated", [""])[0] not in ("", "0")
-                page = render_card(conn, path.split("/")[2], msg=msg, show_rules=show_rules)
+                # id раскодируем: вручную добавленные вакансии имеют вид manual:<hex>,
+                # а ссылка приходит как manual%3A<hex> — без unquote карточка давала 404
+                vacancy_id = urllib.parse.unquote(path.split("/")[2])
+                page = render_card(conn, vacancy_id, msg=msg, show_rules=show_rules)
                 self._send(page if page else "не найдено", status=200 if page else 404)
             elif path.startswith("/letter/"):
-                row = storage.vacancy_with_letter(conn, path.split("/")[2])
+                row = storage.vacancy_with_letter(conn, urllib.parse.unquote(path.split("/")[2]))
                 if not row or not row["letter"]:
                     self._send("письмо не найдено", status=404)
                 else:
@@ -1750,13 +1815,13 @@ class Handler(BaseHTTPRequestHandler):
         conn = storage.connect()
         try:
             if path.startswith("/mark/"):
-                queue.mark_sent(conn, path.split("/")[2])
+                queue.mark_sent(conn, urllib.parse.unquote(path.split("/")[2]))
                 self._redirect("/")
             elif path.startswith("/skip/"):
-                queue.skip(conn, path.split("/")[2])
+                queue.skip(conn, urllib.parse.unquote(path.split("/")[2]))
                 self._redirect("/")
             elif path.startswith("/letter/"):
-                vacancy_id = path.split("/")[2]
+                vacancy_id = urllib.parse.unquote(path.split("/")[2])
                 text = (self._form().get("text") or [""])[0]
                 text = text.replace("\r\n", "\n").strip()
                 if text:
@@ -1768,6 +1833,13 @@ class Handler(BaseHTTPRequestHandler):
                     msg = "пустой текст не сохранён"
                 self._redirect("/v/%s?msg=%s" % (urllib.parse.quote(vacancy_id),
                                                  urllib.parse.quote(msg)))
+            elif path == "/manual":
+                report, vacancy_id = add_manual(conn, self._form())
+                if vacancy_id:
+                    self._redirect("/v/%s?msg=%s" % (
+                        urllib.parse.quote(vacancy_id), urllib.parse.quote(report)))
+                else:
+                    self._redirect("/?msg=" + urllib.parse.quote(report))
             elif path == "/queries":
                 text = (self._form().get("queries") or [""])[0]
                 report = save_queries(text)
@@ -1785,7 +1857,7 @@ class Handler(BaseHTTPRequestHandler):
             elif path.startswith("/run/"):
                 parts = [part for part in path.split("/") if part]  # /run/letters/<id>
                 kind = parts[1] if len(parts) > 1 else ""
-                target = parts[2] if len(parts) > 2 else ""
+                target = urllib.parse.unquote(parts[2]) if len(parts) > 2 else ""
                 form = self._form()
                 # единый селект региона (id субъекта); поле area — совместимость со старыми формами
                 value = (form.get("region") or form.get("area") or [""])[0]

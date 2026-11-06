@@ -37,6 +37,10 @@ def next_batch(conn, limit=50, only_new=True, cooldown_days=None, region=""):
     Порога оценки больше нет: список показывает вакансии в порядке балла,
     а ориентир для решения — сам балл и вердикт в колонке «Оценка».
     region — субъект РФ; фильтр применяется в SQL, а не после выборки.
+
+    Неоценённые вакансии, добавленные вручную (`source='manual'`), идут первыми:
+    человек только что внёс её сам и ждёт её в списке сверху, а не на 30-й странице.
+    Как только балл появился, действует обычный порядок по баллу.
     """
     cooled = cooldown_companies(conn, cooldown_days)
     # Счётчик откликов берётся одним проходом по applications (LEFT JOIN по
@@ -65,7 +69,8 @@ def next_batch(conn, limit=50, only_new=True, cooldown_days=None, region=""):
         sql += (" AND (COALESCE(v.region, '') = ?"
                 " OR (COALESCE(v.region, '') = '' AND COALESCE(v.area, '') = ?))")
         params.extend([region, region])
-    sql += " ORDER BY COALESCE(s.score, 0) DESC, v.created_at DESC"
+    sql += (" ORDER BY CASE WHEN s.score IS NULL AND COALESCE(v.source, '') = 'manual'"
+            " THEN 0 ELSE 1 END, COALESCE(s.score, 0) DESC, v.created_at DESC")
     # Ограничение применяется после стоп-листа и кулдауна; None — вся выборка
     # для серверных фильтров таблицы и подсчёта страниц.
     rows = conn.execute(sql, params).fetchall()
