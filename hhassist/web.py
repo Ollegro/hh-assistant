@@ -63,6 +63,14 @@ box-shadow:0 2px 8px rgba(84,52,140,.08);transition:transform .12s ease,box-shad
 .btn.danger:hover{box-shadow:0 6px 16px rgba(183,28,28,.28)}
 .btn.success{background:linear-gradient(135deg,#34d399,#059669);border-color:transparent;color:#fff}
 .btn.success:hover{box-shadow:0 6px 16px rgba(5,150,105,.28)}
+.btn.ghost{background:rgba(255,255,255,.86);color:#3a2d52;border-color:rgba(120,90,170,.28)}
+.btn.ghost:hover{box-shadow:0 6px 16px rgba(84,52,140,.16)}
+.btn.current{background:linear-gradient(135deg,#6b3fc4,#4c1d95);border-color:transparent;
+ color:#fff;cursor:default;box-shadow:0 4px 12px rgba(76,29,149,.28)}
+.btn.current:hover{transform:none}
+.pager{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.pager .gap{color:#5d5470;padding:0 2px;align-self:center}
+.pager-info{color:#5d5470;font-size:12.5px;margin-right:6px}
 .letter-dot{display:inline-block;width:13px;height:13px;border-radius:50%;background:#16a34a;
  box-shadow:0 0 0 3px rgba(22,163,74,.16);vertical-align:middle}
 .card-company{color:#5d5470}
@@ -437,6 +445,56 @@ REGION_SYNC_JS = (
     "})();</script>")
 
 
+def _page_numbers(page, pages, radius=2):
+    """Номера для пейджера: 1 … (page-r … page+r) … pages.
+
+    Возвращает список номеров и None на месте «…» — так пейджер не растягивается
+    на сотни кнопок, но всегда видны первая, последняя и окно вокруг текущей.
+    """
+    if pages <= 7:
+        return list(range(1, pages + 1))
+    keep = {1, pages}
+    keep.update(range(max(2, page - radius), min(pages - 1, page + radius) + 1))
+    result = []
+    previous = 0
+    for number in sorted(keep):
+        if previous and number - previous > 1:
+            result.append(None)
+        result.append(number)
+        previous = number
+    return result
+
+
+def _pager(page, pages, query):
+    """Пейджер списка: «← Назад», номера страниц, «Далее →» и строка «Показаны N–M».
+
+    Раньше внизу были только «Назад/Далее» и подпись «страница X из Y» над таблицей:
+    на второй-третьей странице терялось, где ты находишься.
+    """
+    if pages <= 1:
+        return ""
+    parts = ["<div class='pager'>"]
+
+    def link(number, label, css=""):
+        href = "/?" + urllib.parse.urlencode(dict(query, page=number), doseq=True)
+        return "<a class='btn%s' href='%s'>%s</a>" % (css, esc(href), label)
+
+    if page > 1:
+        parts.append(link(page - 1, "← Назад"))
+    for number in _page_numbers(page, pages):
+        if number is None:
+            parts.append("<span class='gap'>…</span>")
+        elif number == page:
+            parts.append("<span class='btn current' aria-current='page' "
+                         "title='текущая страница'>%d</span>" % number)
+        else:
+            parts.append(link(number, str(number)))
+    if page < pages:
+        parts.append(link(page + 1, "Далее →"))
+    parts.append("</div>")
+    return "".join(parts)
+
+
 def render_index(conn, limit, msg="", region="", filters=None, page=1, sources=""):
     region_value, region_name = _resolve_region(region)
     sources_value = _sources_value(sources)
@@ -534,8 +592,11 @@ def render_index(conn, limit, msg="", region="", filters=None, page=1, sources="
         "без оценки: <b>%d</b> · в списке: <b>%d</b></div>" % (
             st["vacancies"], st["scored"], max(0, st["vacancies"] - st["scored"]),
             len(rows)))
-    parts.append("<div class='meta'>Найдено по фильтрам: <b>%d</b> · страница %d из %d</div>" %
-                 (total, page, pages))
+    first = (page - 1) * limit + 1 if rows else 0
+    last = (page - 1) * limit + len(rows)
+    parts.append("<div class='meta'>Найдено по фильтрам: <b>%d</b> · страница %d из %d"
+                 "%s</div>" % (total, page, pages,
+                               " · показаны %d–%d" % (first, last) if rows else ""))
     parts.append("<form id='column-filters' method='get' action='/'></form>"
                  "<input form='column-filters' type='hidden' name='region' value='%s'>" % esc(region_value))
     parts.append("<style>.column-filter{display:inline-block;vertical-align:top}"
@@ -585,10 +646,9 @@ def render_index(conn, limit, msg="", region="", filters=None, page=1, sources="
     parts.append("</tbody></table><div class='actions'>")
     query = {"region": region_value}
     query.update({"f_" + col: values for col, values in filters.items() if values})
-    for number, label in ((page - 1, "← Назад"), (page + 1, "Далее →")):
-        if 1 <= number <= pages:
-            href = "/?" + urllib.parse.urlencode(dict(query, page=number), doseq=True)
-            parts.append("<a class='btn' href='%s'>%s</a>" % (esc(href), label))
+    pager = _pager(page, pages, query)
+    if pager:
+        parts.append(pager)
     parts.append("<a class='btn' href='/?%s'>Сбросить фильтры</a>" %
                  esc(urllib.parse.urlencode({"region": region_value})))
     parts.append("<form method='post' action='/logout'><button class='btn' type='submit'>"

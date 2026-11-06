@@ -6,9 +6,9 @@ import urllib.parse
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _bootstrap import APP
-from test_web_layout import Base
-from hhassist import web, vacancy_filters, collector, hh_api
+from _bootstrap import APP, sample_vacancy  # noqa: E402,F401
+from test_web_layout import Base  # noqa: E402
+from hhassist import web, vacancy_filters, collector, hh_api, storage  # noqa: E402
 
 
 class FiltersTest(Base):
@@ -181,6 +181,63 @@ class HhSourceAliasTest(unittest.TestCase):
     def test_unknown_source_still_raises(self):
         with self.assertRaises(ValueError):
             collector.collect("q", source="нечто")
+
+
+class PagerTest(Base):
+    """Пейджер списка вакансий: номера страниц вместо одних «Назад/Далее».
+
+    Владелец: «надо добавить номера страниц на подобранные вакансии, легко запутаться».
+    """
+
+    def test_page_numbers_short(self):
+        self.assertEqual(web._page_numbers(1, 5), [1, 2, 3, 4, 5])
+        self.assertEqual(web._page_numbers(3, 7), [1, 2, 3, 4, 5, 6, 7])
+
+    def test_page_numbers_long_has_gaps(self):
+        numbers = web._page_numbers(6, 20)
+        self.assertEqual(numbers[0], 1)
+        self.assertEqual(numbers[-1], 20)
+        self.assertIn(None, numbers)
+        self.assertIn(6, numbers)
+        self.assertNotIn(11, numbers)
+        self.assertIn(4, numbers)
+        self.assertIn(8, numbers)
+
+    def test_page_numbers_edges_show_first_and_last(self):
+        self.assertEqual(web._page_numbers(1, 20)[:5], [1, 2, 3, None, 20])
+        self.assertEqual(web._page_numbers(20, 20)[-5:], [1, None, 18, 19, 20])
+
+    def rendered(self, page, total_rows, limit):
+        """Список с заданным числом вакансий и размером страницы."""
+        for i in range(total_rows):
+            storage.upsert_vacancy(self.conn,
+                                   sample_vacancy(id=str(i + 1), title="AI-инженер %d" % i))
+        self.conn.commit()
+        return web.render_index(self.conn, limit, page=page)
+
+    def test_pager_marks_current_page(self):
+        page = self.rendered(2, 30, 10)
+        self.assertIn("class='btn current' aria-current='page'", page)
+        self.assertIn(">2</span>", page)
+        self.assertIn("страница 2 из 3", page)
+
+    def test_pager_has_numbered_links_and_bounds(self):
+        page = self.rendered(2, 30, 10)
+        self.assertIn(">1</a>", page)
+        self.assertIn(">3</a>", page)
+        self.assertIn("← Назад", page)
+        self.assertIn("Далее →", page)
+        self.assertIn("показаны 11–20", page)
+
+    def test_no_pager_on_single_page(self):
+        page = self.rendered(1, 5, 10)
+        self.assertNotIn("class='pager'", page)
+        self.assertNotIn("aria-current='page'", page)
+
+    def test_pager_keeps_filters_and_region(self):
+        page = self.rendered(2, 30, 10)
+        self.assertIn("page=3", page)
+        self.assertIn("region=", page)
 
 
 class RegionRequestsTest(unittest.TestCase):
