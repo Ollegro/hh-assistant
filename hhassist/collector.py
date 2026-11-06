@@ -476,6 +476,12 @@ def collect(query, area=1, pages=1, per_page=50, limit=None, source=None, detail
     """
     s = get_settings()
     mode = (source or getattr(s, "hh_source", "auto") or "auto").strip().lower()
+    # "hh" — площадка hh.ru в списке источников jobs.collect_queries: это тот же
+    # сбор, что и "auto" (API при наличии токена, иначе HTML). Без этого списка
+    # источник "hh" падал с ValueError, ошибка глоталась в jobs, и прогон молча
+    # сохранял 0 вакансий (проверено 06.11.2026 на проде).
+    if mode == "hh":
+        mode = "auto"
     if mode not in ("auto", "api", "html"):
         from . import sources as external
 

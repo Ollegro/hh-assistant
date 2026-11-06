@@ -33,7 +33,11 @@ def titles():
 
 
 def collect(name, query, area="", pages=1, per_page=50, pause=1.0, remote=False):
-    """Сбор одним источником. Ошибки источника поднимаются исключением."""
+    """Сбор одним источником. Ошибки источника поднимаются исключением.
+
+    Имя "hh" сюда не приходит: это площадка самого hh.ru, её ведёт
+    `collector.collect` (source="auto"/"html"/"api").
+    """
     module = get(name)
     if not module:
         raise ValueError("неизвестный источник: %r (доступны: %s)"

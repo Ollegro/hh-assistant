@@ -133,6 +133,36 @@ class SearchOrderTest(unittest.TestCase):
         self.assertEqual(len(urls), 3)
 
 
+class HhSourceAliasTest(unittest.TestCase):
+    """Площадка "hh" из списка источников не должна падать в collector.collect.
+
+    jobs.collect_queries передаёт source="hh" — до 06.11.2026 это давало ValueError,
+    ошибка глоталась как «поиск не удался», и прогон молча сохранял 0 вакансий.
+    """
+
+    def test_hh_source_is_auto(self):
+        calls = []
+
+        def fake_search_ids(query, **kwargs):
+            calls.append(kwargs)
+            return []
+
+        with mock.patch.object(collector, "search_ids", fake_search_ids), \
+                mock.patch.object(collector, "get_settings",
+                                  lambda: mock.Mock(hh_source="html", hh_api_timeout=1,
+                                                    hh_api_retries=1, delay_seconds=0,
+                                                    user_agent="t", hh_app_token="",
+                                                    hh_client_id="", hh_client_secret="")):
+            vacancies, info = collector.collect("q", area=[113], source="hh")
+        self.assertEqual(vacancies, [])
+        self.assertEqual(info["source"], "html")
+        self.assertEqual(calls[0]["order_by"], None)
+
+    def test_unknown_source_still_raises(self):
+        with self.assertRaises(ValueError):
+            collector.collect("q", source="нечто")
+
+
 class RegionRequestsTest(unittest.TestCase):
     def test_html_request_has_only_selected_area(self):
         urls = []
