@@ -101,11 +101,12 @@ class Settings:
     reply_wait_days: int = 14
     collect_limit: int = 40
     collect_total: int = 200
-    collect_pages: int = 1
+    collect_pages: int = 3
     collect_queries: int = 0
     collect_areas: list = field(default_factory=lambda: [113])
     collect_remote: bool = False
     collect_refresh_days: int = 3
+    collect_order: str = ""
     company_cooldown_days: int = 10
     llm_provider: str = ""
     llm_api_key: str = ""
@@ -191,11 +192,12 @@ def get_settings():
         reply_wait_days=int(env.get("REPLY_WAIT_DAYS", 14)),
         collect_limit=int(env.get("COLLECT_LIMIT", 40)),
         collect_total=int(env.get("COLLECT_TOTAL", 200)),
-        collect_pages=int(env.get("COLLECT_PAGES", 1)),
+        collect_pages=int(env.get("COLLECT_PAGES", 3)),
         collect_queries=int(env.get("COLLECT_QUERIES", 0)),
         collect_areas=parse_areas(env.get("COLLECT_AREAS", "")),
         collect_remote=env.get("COLLECT_REMOTE", "").strip().lower() in ("1", "true", "yes", "on"),
         collect_refresh_days=int(env.get("COLLECT_REFRESH_DAYS", 3)),
+        collect_order=(env.get("COLLECT_ORDER", "") or "").strip().lower(),
         company_cooldown_days=int(env.get("COMPANY_COOLDOWN_DAYS", 10)),
         llm_provider=env.get("LLM_PROVIDER", ""),
         llm_api_key=env.get("LLM_API_KEY", ""),

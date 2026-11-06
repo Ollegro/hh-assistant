@@ -3,6 +3,7 @@
 import gzip
 import html as html_lib
 import io
+import json
 import re
 import time
 import urllib.error
@@ -14,6 +15,10 @@ from .config import get_settings
 
 SEARCH_URL = "https://hh.ru/search/vacancy"
 VACANCY_URL = "https://hh.ru/vacancy/%s"
+# Сортировка выдачи hh по умолчанию: пустая строка — релевантность (как на сайте).
+# "publication_time" — по дате; так свежие вакансии оказываются в конце выдачи:
+# 06.11.2026 нужная вакансия была 244-й из 876 и в первую страницу не попадала.
+DEFAULT_ORDER = ""
 
 _UA = None
 
@@ -141,10 +146,14 @@ def _find(text, pattern, flags=re.S):
     return m.group(1) if m else ""
 
 
-def search_ids(query, area=1, pages=1, per_page=50, pause=1.5, remote=False):
+def search_ids(query, area=1, pages=1, per_page=50, pause=1.5, remote=False, order_by=None):
     """Возвращает список id вакансий по поисковому запросу.
 
     area — id региона или список id; remote=True — только удалёнка.
+    order_by — сортировка выдачи hh: None — релевантность (как на сайте по умолчанию),
+    "publication_time" — по дате. По дате свежие вакансии уезжают в конец: 06.11.2026
+    нужная вакансия стояла 244-й из 876 и в первую страницу не попадала, поэтому по
+    умолчанию берём релевантность, а порядок настраивается через COLLECT_ORDER.
     """
     ids = []
     for page in range(pages):
@@ -153,8 +162,11 @@ def search_ids(query, area=1, pages=1, per_page=50, pause=1.5, remote=False):
             "area": area,
             "page": page,
             "items_on_page": per_page,
-            "order_by": "publication_time",
         }
+        # Пустой order_by не отправляем: hh по умолчанию сортирует по релевантности,
+        # а лишний параметр только засоряет запрос.
+        if order_by or DEFAULT_ORDER:
+            params["order_by"] = order_by or DEFAULT_ORDER
         if remote:
             params["schedule"] = "remote"
         # doseq=True: несколько регионов уходят как area=1&area=2
@@ -256,6 +268,97 @@ def _clean_company(value):
     return text[:120]
 
 
+# Формат работы из карточки кодируется по-разному: JSON `workFormats`, строка
+# «Формат работы: …» и подпись `data-qa="work-format"`. hh может поставить
+# ON_SITE («на месте работодателя»), хотя в тексте вакансии указан гибрид —
+# тогда верим тексту и JSON-LD, иначе правило профиля штрафует подходящую вакансию.
+FORMAT_MAP = {"REMOTE": "удалённо", "HYBRID": "гибрид", "ON_SITE": "офис",
+              "FIELD_WORK": "разъездная", "ON_SITE_OFFICE": "офис"}
+FORMAT_TEXT_FROM_TEXT = {"на месте работодателя": "офис", "полный день": "полный день",
+                         "сменный график": "сменный график"}
+
+
+def json_ld(html_text):
+    """JSON-LD карточки (`JobPosting`) как словарь: datePosted, employmentType, baseSalary…
+
+    hh кладёт в этот блок то, чего нет в анонимном HTML-тексте: дату публикации и,
+    когда работодатель её показал, вилку зарплаты. Пустой словарь — блок не найден
+    или разметка битая.
+    """
+    for raw in re.findall(r'<script[^>]*type="application/ld\+json"[^>]*>(.*?)</script>',
+                          html_text, re.S):
+        try:
+            data = json.loads(raw.strip())
+        except ValueError:
+            continue
+        if isinstance(data, list):
+            data = data[0] if data else {}
+        if isinstance(data, dict) and data:
+            return data
+    return {}
+
+
+def _salary(html_text, head):
+    """(from, to, currency): разметка карточки, JSON-LD, строка «Уровень дохода».
+
+    Анонимно hh часто пишет «Уровень дохода не указан», хотя в JSON-LD `baseSalary`
+    бывает заполнен — поэтому источник идёт вторым по приоритету.
+    """
+    candidates = [clean(_find(html_text, r'data-qa="vacancy-salary"[^>]*>(.*?)</')),
+                  head and (re.search(r"Уровень дохода\s*(.{0,160})", head).group(1)
+                            if re.search(r"Уровень дохода\s*(.{0,160})", head) else "")]
+    bank = json_ld(html_text).get("baseSalary") or {}
+    if isinstance(bank, dict):
+        value = bank.get("value") if isinstance(bank.get("value"), dict) else bank
+        low = value.get("minValue", value.get("value") if isinstance(value, dict) else None)
+        high = value.get("maxValue")
+        currency = str(bank.get("currency") or value.get("currency") or "").upper()
+        if low or high:
+            nums = [int(n) for n in (low, high) if isinstance(n, (int, float))]
+            return min(nums), (max(nums) if len(nums) > 1 else None), \
+                {"RUR": "RUR", "RUB": "RUR", "USD": "USD", "EUR": "EUR"}.get(currency, "")
+    for raw in candidates:
+        if not raw or "не указан" in raw.lower():
+            continue
+        nums = [int(x.replace("\u00a0", "").replace(" ", ""))
+                for x in re.findall(r"(\d[\d\s\u00a0]{3,})", raw)]
+        if not nums:
+            continue
+        currency = ("RUR" if "₽" in raw or "руб" in raw.lower() else
+                    "USD" if "$" in raw else "EUR" if "€" in raw else "")
+        return min(nums), (max(nums) if len(nums) > 1 else None), currency
+    return None, None, ""
+
+
+def _work_format(html_text, head):
+    """Формат работы: «Формат работы: …» → JSON-LD → workFormats → data-qa.
+
+    Возвращает строку вида «гибрид, офис»: если работодатель указал в тексте гибрид,
+    а разметка говорит «на месте работодателя», сохраняются оба значения — правило
+    профиля найдёт «гибрид» и не оштрафует вакансию.
+    """
+    found = []
+    m = re.search(r"Формат работы:\s*(удалённо|на месте работодателя|гибрид|разъездная|"
+                  r"полный день|сменный график)", head)
+    if m:
+        found.append(FORMAT_TEXT_FROM_TEXT.get(m.group(1), m.group(1)))
+    bank = json_ld(html_text)
+    employment = str(bank.get("employmentType") or "").upper()
+    found += [FORMAT_MAP[e] for e in re.findall(r"[A-Z_]+", employment) if e in FORMAT_MAP]
+    if str(bank.get("jobLocationType") or "").upper() == "TELECOMMUTE" or m and \
+            m.group(1) == "удалённо":
+        found.append("удалённо")
+    m = re.search(r'"workFormats"\s*:\s*\[(.*?)\]', html_text)
+    if m:
+        found += [FORMAT_MAP[v] for v in re.findall(r'"([A-Z_]+)"', m.group(1))
+                  if v in FORMAT_MAP]
+    if not found:
+        label = clean(_find(html_text, r'data-qa="work-format"[^>]*>(.*?)<'))
+        if label:
+            found.append(FORMAT_TEXT_FROM_TEXT.get(label.lower(), label.lower()))
+    return ", ".join(dict.fromkeys(v for v in found if v))
+
+
 def parse_vacancy(html_text, vacancy_id):
     """Разбирает карточку вакансии в нормализованный словарь."""
     head = clean(html_text[:120000])[:4000]
@@ -274,35 +377,9 @@ def parse_vacancy(html_text, vacancy_id):
     if not company:
         company = _clean_company(_find(html_text, r'data-qa="vacancy-company-name"[^>]*>(.*?)<'))
 
-    salary_raw = clean(_find(html_text, r'data-qa="vacancy-salary"[^>]*>(.*?)</'))
-    if not salary_raw:
-        m = re.search(r"Уровень дохода\s*(.{0,160})", head)
-        salary_raw = m.group(1) if m else ""
-    salary_from = salary_to = None
-    currency = ""
-    nums = [int(x.replace("\u00a0", "").replace(" ", ""))
-            for x in re.findall(r"(\d[\d\s\u00a0]{3,})", salary_raw)]
-    if nums:
-        salary_from = min(nums)
-        salary_to = max(nums) if len(nums) > 1 else None
-    if "₽" in salary_raw:
-        currency = "RUR"
-    elif "$" in salary_raw:
-        currency = "USD"
-    elif "€" in salary_raw:
-        currency = "EUR"
+    salary_from, salary_to, currency = _salary(html_text, head)
 
-    work_format = ""
-    m = re.search(r'"workFormats"\s*:\s*\[(.*?)\]', html_text)
-    if m:
-        mapping = {"REMOTE": "удалённо", "HYBRID": "гибрид", "ON_SITE": "офис", "FIELD_WORK": "разъездная"}
-        vals = re.findall(r'"([A-Z_]+)"', m.group(1))
-        work_format = ", ".join(mapping.get(v, v) for v in vals)
-    if not work_format:
-        m = re.search(r"Формат работы:\s*(удалённо|на месте работодателя|гибрид|разъездная|полный день|сменный график)", head)
-        work_format = m.group(1) if m else ""
-    if not work_format:
-        work_format = clean(_find(html_text, r'data-qa="work-format"[^>]*>(.*?)<'))
+    work_format = _work_format(html_text, head)
 
     experience = ""
     m = re.search(r'"workExperience"\s*:\s*"([A-Za-z0-9_]+)"', html_text)
@@ -321,7 +398,8 @@ def parse_vacancy(html_text, vacancy_id):
         experience = clean(_find(html_text, r'data-qa="vacancy-experience"[^>]*>(.*?)<'))
 
     published = _find(html_text, r'"publicationTimeIso"\s*:\s*"([^"]+)"') or \
-                _find(html_text, r'"publicationTime"\s*:\s*"([^"]+)"')
+                _find(html_text, r'"publicationTime"\s*:\s*"([^"]+)"') or \
+                str(json_ld(html_text).get("datePosted") or "")
 
     description = description_of(html_text)
 
@@ -355,6 +433,7 @@ def _collect_external(name, query, area, pages, per_page, limit, known, refresh_
 
     Формат вакансии тот же, что у hh, поэтому скоринг и письма работают без правок;
     отличается только `id` — с префиксом площадки, чтобы записи не сталкивались.
+    Сортировка `order_by` у площадок своя, поэтому параметр hh сюда не передаётся.
     """
     from . import sources as external
 
@@ -381,7 +460,7 @@ def fetch_vacancy(vacancy_id, pause=1.2):
 
 
 def collect(query, area=1, pages=1, per_page=50, limit=None, source=None, details=True,
-            known=None, refresh_days=0, remote=False):
+            known=None, refresh_days=0, remote=False, order_by=None):
     """Собирает вакансии выбранным источником и возвращает (vacancies, info).
 
     source: "auto" (по умолчанию значение HH_SOURCE) — API hh.ru, если настроен токен
@@ -389,6 +468,7 @@ def collect(query, area=1, pages=1, per_page=50, limit=None, source=None, detail
     Дополнительно принимаются внешние площадки из `hhassist.sources`
     (habr, superjob, trudvsem, getmatch) — каждая со своим парсером.
     area — id региона или список id. remote=True — только удалёнка.
+    order_by — сортировка выдачи hh для HTML-сбора (None — из COLLECT_ORDER).
     known — {vacancy_id: время последнего сбора}: вакансии, собранные меньше
     refresh_days дней назад, заново не скачиваются (инкрементальный сбор).
     info = {source, fallback, reason, found, taken, new, refreshed, skipped, errors,
@@ -443,7 +523,8 @@ def collect(query, area=1, pages=1, per_page=50, limit=None, source=None, detail
         else:
             reason = "токен hh не настроен"
 
-    ids = search_ids(query, area=area, pages=pages, per_page=per_page, remote=remote)
+    ids = search_ids(query, area=area, pages=pages, per_page=per_page, remote=remote,
+                     order_by=order_by)
     found = len(ids)
     skipped = sum(1 for vid in ids if vid in skip)
     ids = [vid for vid in ids if vid not in skip]

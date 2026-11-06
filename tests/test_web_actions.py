@@ -172,8 +172,10 @@ class CollectSettingsTest(unittest.TestCase):
 
     def test_collect_defaults(self):
         s = self.settings_from({})
+        # COLLECT_PAGES=3: одной страницы не хватало — вакансия 136901954 стояла 244-й.
         self.assertEqual((s.collect_limit, s.collect_total, s.collect_pages,
-                          s.collect_queries), (40, 200, 1, 0))
+                          s.collect_queries), (40, 200, 3, 0))
+        self.assertEqual(s.collect_order, "")
 
     def test_collect_total_from_env(self):
         self.assertEqual(self.settings_from({"COLLECT_TOTAL": "150"}).collect_total, 150)

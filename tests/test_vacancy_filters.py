@@ -56,6 +56,83 @@ class FiltersTest(Base):
         self.assertIn("&lt;script&gt;", page)
 
 
+class FormatAndSalaryTest(unittest.TestCase):
+    """Формат работы и зарплата: JSON-LD важнее «не указан» в анонимном HTML.
+
+    Случай с живой вакансии 136901954 (06.11.2026): работодатель написал в тексте
+    «Формат работы: гибрид», hh разметил её как ON_SITE, а вилку (100 000 ₽) анонимно
+    не показал вовсе — из-за этого правило профиля штрафовало подходящую вакансию.
+    """
+
+    def parse(self, body):
+        return collector.parse_vacancy(body, "1")
+
+    def test_text_format_wins_over_on_site(self):
+        v = self.parse('<html><body>Формат работы: гибрид'
+                       '{"workFormats":["ON_SITE"]}</body></html>')
+        self.assertIn("гибрид", v["work_format"])
+        self.assertIn("офис", v["work_format"])
+
+    def test_remote_from_json_ld(self):
+        v = self.parse('<html><body><script type="application/ld+json">'
+                       '{"@type": "JobPosting", "jobLocationType": "TELECOMMUTE"}'
+                       '</script></body></html>')
+        self.assertEqual(v["work_format"], "удалённо")
+
+    def test_salary_from_json_ld_when_html_says_none(self):
+        v = self.parse('<html><body>Уровень дохода не указан'
+                       '<script type="application/ld+json">{"@type":"JobPosting",'
+                       '"baseSalary":{"@type":"MonetaryAmount","currency":"RUR",'
+                       '"value":{"@type":"QuantitativeValue","minValue":100000,'
+                       '"maxValue":120000}}}</script></body></html>')
+        self.assertEqual((v["salary_from"], v["salary_to"], v["currency"]),
+                         (100000, 120000, "RUR"))
+
+    def test_published_from_json_ld(self):
+        v = self.parse('<html><body><script type="application/ld+json">'
+                       '{"@type":"JobPosting","datePosted":"2026-11-02T09:59:22+03:00"}'
+                       '</script></body></html>')
+        self.assertEqual(v["published_at"], "2026-11-02T09:59:22+03:00")
+
+    def test_broken_json_ld_does_not_break_parsing(self):
+        v = self.parse('<html><body><script type="application/ld+json">{битый}</script>'
+                       'Уровень дохода не указано</body></html>')
+        self.assertEqual(v["salary_from"], None)
+        self.assertEqual(collector.json_ld("<html></html>"), {})
+
+
+class SearchOrderTest(unittest.TestCase):
+    """Сортировка выдачи: по умолчанию релевантность, дата — по настройке.
+
+    При order_by=publication_time нужная вакансия стояла 244-й из 876 и не попадала
+    в первую страницу (COLLECT_PAGES=1), поэтому порядок стал настраиваемым.
+    """
+
+    def request_params(self, **kwargs):
+        urls = []
+        with mock.patch.object(collector, "http_get",
+                               side_effect=lambda url: urls.append(url) or ""):
+            collector.search_ids("AI-инженер", area=[113], pause=0, **kwargs)
+        # keep_blank_values: по умолчанию parse_qs выбрасывает order_by="" (релевантность)
+        return urllib.parse.parse_qs(urllib.parse.urlsplit(urls[0]).query,
+                                     keep_blank_values=True)
+
+    def test_default_is_relevance(self):
+        # по умолчанию параметра нет — hh сортирует по релевантности, как сайт
+        self.assertNotIn("order_by", self.request_params())
+
+    def test_order_by_date_when_asked(self):
+        params = self.request_params(order_by="publication_time")
+        self.assertEqual(params["order_by"], ["publication_time"])
+
+    def test_pages_are_requested(self):
+        urls = []
+        with mock.patch.object(collector, "http_get",
+                               side_effect=lambda url: urls.append(url) or ""):
+            collector.search_ids("AI-инженер", area=[113], pages=3, pause=0)
+        self.assertEqual(len(urls), 3)
+
+
 class RegionRequestsTest(unittest.TestCase):
     def test_html_request_has_only_selected_area(self):
         urls = []

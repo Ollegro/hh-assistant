@@ -55,6 +55,7 @@ def collect_queries(conn, queries, settings, limit=None, pages=None, on_item=Non
     areas = list(area_ids or getattr(settings, "collect_areas", None) or [113])
     refresh_days = int(getattr(settings, "collect_refresh_days", 0) or 0)
     remote = bool(getattr(settings, "collect_remote", False))
+    order_by = getattr(settings, "collect_order", "") or ""
     from . import sources as external
     if sources is None:
         raw = getattr(settings, "collect_sources", "hh") or "hh"
@@ -83,7 +84,8 @@ def collect_queries(conn, queries, settings, limit=None, pages=None, on_item=Non
             try:
                 vacancies, info = collector.collect(
                     query, area=areas, pages=pages, per_page=50, limit=per_query,
-                    source=name, known=known, refresh_days=refresh_days, remote=remote)
+                    source=name, known=known, refresh_days=refresh_days, remote=remote,
+                    order_by=order_by)
             except Exception as exc:  # сеть, ключ площадки, парсер — не рушим прогон
                 notes.append("«%s» (%s): поиск не удался (%s)"
                              % (query, external.TITLES.get(name, name), exc))
