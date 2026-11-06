@@ -3,7 +3,9 @@
 import io
 import json
 import os
+import shutil
 import sys
+import tempfile
 import unittest
 import urllib.error
 from unittest import mock
@@ -76,6 +78,12 @@ class ApiBase(unittest.TestCase):
         sleeper = mock.patch.object(hh_api.time, "sleep", lambda *_: None)
         sleeper.start()
         self.addCleanup(sleeper.stop)
+        # файл токена — во временной папке: тесты не трогают рабочий data/
+        self.tmp = tempfile.mkdtemp(prefix="hh-token-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        patcher = mock.patch.object(hh_api, "DATA_DIR", self.tmp)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         hh_api.reset_token()
         hh_api.clear_cache()
         self.addCleanup(hh_api.clear_cache)
@@ -191,6 +199,47 @@ class TokenTest(ApiBase):
         self.assertIn("не настроен", str(ctx.exception))
         self.assertEqual(self.requests, [])
         self.assertFalse(hh_api.has_token())
+
+    def test_token_saved_and_reused_after_restart(self):
+        """Токен переживает перезапуск процесса: hh не даёт просить новый часто."""
+        self.settings.hh_app_token = ""
+        self.settings.hh_client_id = "cid"
+        self.settings.hh_client_secret = "csecret"
+        self.serve(FakeResponse({"access_token": "kept-token", "token_type": "bearer"}))
+        self.assertEqual(hh_api.app_token(), "kept-token")
+        self.assertEqual(len(self.requests), 1)
+        # «перезапуск»: память пуста, файл остался
+        hh_api.reset_token()
+        self.assertEqual(hh_api.app_token(), "kept-token")
+        self.assertEqual(len(self.requests), 1)      # второго запроса к /token не было
+
+    def test_saved_token_has_private_permissions(self):
+        hh_api.save_token("secret-token", "test")
+        path = hh_api._token_path()
+        self.assertTrue(os.path.exists(path))
+        if os.name != "nt":
+            mode = os.stat(path).st_mode & 0o777
+            self.assertEqual(mode, 0o600)
+
+    def test_saved_token_not_used_when_env_token_given(self):
+        """HH_APP_TOKEN приоритетнее файла: значение из .env всегда главнее."""
+        hh_api.save_token("stale-token", "test")
+        self.assertEqual(hh_api.app_token(), TOKEN)
+        self.assertEqual(self.requests, [])
+
+    def test_refresh_too_early_explained(self):
+        """403 «app token refresh too early» должно объясняться, а не пугать кодом."""
+        self.settings.hh_app_token = ""
+        self.settings.hh_client_id = "cid"
+        self.settings.hh_client_secret = "csecret"
+        payload = {"error": "app_token_refresh_too_early",
+                   "error_description": "app token refresh too early"}
+        self.serve(http_error(403, payload))
+        with self.assertRaises(hh_api.HHApiError) as ctx:
+            hh_api.app_token()
+        self.assertEqual(ctx.exception.status, 403)
+        self.assertIn("слишком недавно", str(ctx.exception))
+        self.assertIn("переиспользуется", str(ctx.exception))
 
 
 class RequestTest(ApiBase):

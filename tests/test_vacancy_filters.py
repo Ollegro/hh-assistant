@@ -167,12 +167,16 @@ class HhSourceAliasTest(unittest.TestCase):
             calls.append(kwargs)
             return []
 
+        # Подменяем настройки в обоих модулях: collector спрашивает источник,
+        # а hh_api по своим настройкам решает, есть ли токен. Раньше здесь был
+        # только collector — и после появления ключей в .env тест уходил в сеть.
+        offline = mock.Mock(hh_source="html", hh_api_timeout=1, hh_api_retries=1,
+                            delay_seconds=0, user_agent="t", hh_app_token="",
+                            hh_client_id="", hh_client_secret="")
         with mock.patch.object(collector, "search_ids", fake_search_ids), \
-                mock.patch.object(collector, "get_settings",
-                                  lambda: mock.Mock(hh_source="html", hh_api_timeout=1,
-                                                    hh_api_retries=1, delay_seconds=0,
-                                                    user_agent="t", hh_app_token="",
-                                                    hh_client_id="", hh_client_secret="")):
+                mock.patch.object(collector, "get_settings", lambda: offline), \
+                mock.patch.object(hh_api, "get_settings", lambda: offline), \
+                mock.patch.object(hh_api, "load_saved_token", lambda: ""):
             vacancies, info = collector.collect("q", area=[113], source="hh")
         self.assertEqual(vacancies, [])
         self.assertEqual(info["source"], "html")

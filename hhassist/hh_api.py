@@ -16,12 +16,13 @@
 import gzip
 import io
 import json
+import os
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 
-from .config import get_settings
+from .config import DATA_DIR, ensure_dirs, get_settings
 
 API_BASE = "https://api.hh.ru"
 TOKEN_URL = "https://api.hh.ru/token"
@@ -31,6 +32,12 @@ MAX_PER_PAGE = 100      # максимум per_page у /vacancies
 _TOKEN = None           # кэш токена приложения в памяти процесса
 _ETAGS = {}             # url -> ETag (для 304 Not Modified)
 _CACHE = {}             # url -> последний разобранный ответ
+
+# Файл токена рядом с базой: переживает перезапуск сервиса и CLI.
+# hh отдаёт «app token refresh too early» (403), если просить токен слишком часто,
+# поэтому токен нельзя держать только в памяти: каждый `systemctl restart` и каждый
+# запуск `cli.py` просил новый и попадал в отказ.
+TOKEN_FILE = "hh_token.json"
 
 
 class HHApiError(RuntimeError):
@@ -123,6 +130,52 @@ def clear_cache():
     _CACHE.clear()
 
 
+def _token_path():
+    """Путь к файлу токена (в data/, рядом с базой; в git не попадает)."""
+    return os.path.join(DATA_DIR, TOKEN_FILE)
+
+
+def load_saved_token():
+    """Токен, сохранённый прошлым запуском. Читает файл, ошибки не поднимает."""
+    try:
+        with open(_token_path(), encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return ""
+    token = data.get("access_token") if isinstance(data, dict) else ""
+    return token if isinstance(token, str) else ""
+
+
+def save_token(token, source=""):
+    """Кладёт токен в файл с правами 600. Молча выходит, если запись не удалась."""
+    if not token:
+        return
+    ensure_dirs()
+    path = _token_path()
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump({"access_token": token, "source": source, "saved_at": int(time.time())}, fh)
+        try:
+            os.chmod(tmp, 0o600)
+        except OSError:
+            pass
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
+def forget_saved_token():
+    """Удаляет файл токена: следующий вызов app_token() попросит новый."""
+    try:
+        os.unlink(_token_path())
+    except OSError:
+        pass
+
+
 def reset_token():
     """Забывает токен в памяти: следующий вызов app_token() возьмёт его из .env или /token."""
     global _TOKEN
@@ -141,13 +194,18 @@ def has_token():
 
 
 def app_token(force=False):
-    """Токен приложения: HH_APP_TOKEN из .env либо POST /token (client_credentials)."""
+    """Токен приложения: файл data/hh_token.json, HH_APP_TOKEN из .env либо POST /token."""
     global _TOKEN
     s = get_settings()
     if _TOKEN and not force:
         return _TOKEN
-    if s.hh_app_token and not force:
-        return s.hh_app_token
+    if not force:
+        if s.hh_app_token:
+            return s.hh_app_token
+        saved = load_saved_token()
+        if saved:
+            _TOKEN = saved
+            return saved
     if not s.hh_client_id or not s.hh_client_secret:
         if force and s.hh_app_token:
             raise HHApiError(0, "перевыпуск возможен только через HH_CLIENT_ID + HH_CLIENT_SECRET "
@@ -174,11 +232,19 @@ def app_token(force=False):
             payload = _json(_decode(resp, resp.read()))
     except urllib.error.HTTPError as exc:
         text, data = _error_payload(exc)
-        raise _error(exc.code, data, text)
+        err = _error(exc.code, data, text)
+        if exc.code == 403 and "too early" in (text or "").lower():
+            raise HHApiError(403, "hh отказывает в новом токене: прошлый выдан слишком недавно "
+                                  "(app token refresh too early). Токен сохранён в %s и "
+                                  "переиспользуется; удалите файл, только если он испорчен."
+                             % _token_path(), value=err.value, request_id=err.request_id,
+                             body=text)
+        raise err
     token = payload.get("access_token")
     if not token:
         raise HHApiError(0, "в ответе /token нет access_token")
     _TOKEN = token
+    save_token(token, "client_credentials")
     return token
 
 
