@@ -298,25 +298,39 @@ def json_ld(html_text):
     return {}
 
 
-def _salary(html_text, head):
+def _num(value):
+    """Число из JSON-LD: hh иногда отдаёт сумму строкой ("100000")."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, str):
+        digits = re.sub(r"[^\d]", "", value)
+        return int(digits) if digits else None
+    return None
+
+
+def _salary(html_text, head, bank=None):
     """(from, to, currency): разметка карточки, JSON-LD, строка «Уровень дохода».
 
     Анонимно hh часто пишет «Уровень дохода не указан», хотя в JSON-LD `baseSalary`
-    бывает заполнен — поэтому источник идёт вторым по приоритету.
+    бывает заполнен — поэтому источник идёт вторым по приоритету. `bank` — уже
+    разобранный JSON-LD (чтобы не парсить блок повторно).
     """
-    candidates = [clean(_find(html_text, r'data-qa="vacancy-salary"[^>]*>(.*?)</')),
-                  head and (re.search(r"Уровень дохода\s*(.{0,160})", head).group(1)
-                            if re.search(r"Уровень дохода\s*(.{0,160})", head) else "")]
-    bank = json_ld(html_text).get("baseSalary") or {}
-    if isinstance(bank, dict):
-        value = bank.get("value") if isinstance(bank.get("value"), dict) else bank
-        low = value.get("minValue", value.get("value") if isinstance(value, dict) else None)
-        high = value.get("maxValue")
-        currency = str(bank.get("currency") or value.get("currency") or "").upper()
-        if low or high:
-            nums = [int(n) for n in (low, high) if isinstance(n, (int, float))]
+    bank = json_ld(html_text) if bank is None else bank
+    base = bank.get("baseSalary") if isinstance(bank, dict) else None
+    if isinstance(base, dict):
+        value = base.get("value") if isinstance(base.get("value"), dict) else base
+        low = _num(value.get("minValue", value.get("value")))
+        high = _num(value.get("maxValue"))
+        currency = str(base.get("currency") or value.get("currency") or "").upper()
+        nums = [n for n in (low, high) if n]
+        if nums:
             return min(nums), (max(nums) if len(nums) > 1 else None), \
                 {"RUR": "RUR", "RUB": "RUR", "USD": "USD", "EUR": "EUR"}.get(currency, "")
+    candidates = [clean(_find(html_text, r'data-qa="vacancy-salary"[^>]*>(.*?)</'))]
+    found = re.search(r"Уровень дохода\s*(.{0,160})", head)
+    candidates.append(found.group(1) if found else "")
     for raw in candidates:
         if not raw or "не указан" in raw.lower():
             continue
@@ -330,19 +344,19 @@ def _salary(html_text, head):
     return None, None, ""
 
 
-def _work_format(html_text, head):
+def _work_format(html_text, head, bank=None):
     """Формат работы: «Формат работы: …» → JSON-LD → workFormats → data-qa.
 
     Возвращает строку вида «гибрид, офис»: если работодатель указал в тексте гибрид,
     а разметка говорит «на месте работодателя», сохраняются оба значения — правило
-    профиля найдёт «гибрид» и не оштрафует вакансию.
+    профиля найдёт «гибрид» и не оштрафует вакансию. `bank` — уже разобранный JSON-LD.
     """
     found = []
     m = re.search(r"Формат работы:\s*(удалённо|на месте работодателя|гибрид|разъездная|"
                   r"полный день|сменный график)", head)
     if m:
         found.append(FORMAT_TEXT_FROM_TEXT.get(m.group(1), m.group(1)))
-    bank = json_ld(html_text)
+    bank = json_ld(html_text) if bank is None else bank
     employment = str(bank.get("employmentType") or "").upper()
     found += [FORMAT_MAP[e] for e in re.findall(r"[A-Z_]+", employment) if e in FORMAT_MAP]
     if str(bank.get("jobLocationType") or "").upper() == "TELECOMMUTE" or m and \
@@ -377,9 +391,10 @@ def parse_vacancy(html_text, vacancy_id):
     if not company:
         company = _clean_company(_find(html_text, r'data-qa="vacancy-company-name"[^>]*>(.*?)<'))
 
-    salary_from, salary_to, currency = _salary(html_text, head)
+    bank = json_ld(html_text)
+    salary_from, salary_to, currency = _salary(html_text, head, bank)
 
-    work_format = _work_format(html_text, head)
+    work_format = _work_format(html_text, head, bank)
 
     experience = ""
     m = re.search(r'"workExperience"\s*:\s*"([A-Za-z0-9_]+)"', html_text)

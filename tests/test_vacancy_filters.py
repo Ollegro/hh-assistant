@@ -100,6 +100,26 @@ class FormatAndSalaryTest(unittest.TestCase):
         self.assertEqual(v["salary_from"], None)
         self.assertEqual(collector.json_ld("<html></html>"), {})
 
+    def test_json_ld_string_numbers(self):
+        # Ревью 06.11.2026: hh отдаёт суммы строкой — int("100000") на строке падал
+        # в min(), и парсинг карточки целиком ломался с ValueError.
+        v = self.parse('<html><body><script type="application/ld+json">{"@type":"JobPosting",'
+                       '"baseSalary":{"currency":"RUB","value":{"minValue":"100000",'
+                       '"maxValue":"120000"}}}</script></body></html>')
+        self.assertEqual((v["salary_from"], v["salary_to"], v["currency"]),
+                         (100000, 120000, "RUR"))
+
+    def test_json_ld_single_value(self):
+        v = self.parse('<html><body><script type="application/ld+json">{"@type":"JobPosting",'
+                       '"baseSalary":{"currency":"RUR","value":100000}}</script></body></html>')
+        self.assertEqual((v["salary_from"], v["salary_to"], v["currency"]),
+                         (100000, None, "RUR"))
+
+    def test_json_ld_without_currency(self):
+        v = self.parse('<html><body><script type="application/ld+json">{"@type":"JobPosting",'
+                       '"baseSalary":{"value":{"minValue":90000}}}</script></body></html>')
+        self.assertEqual((v["salary_from"], v["currency"]), (90000, ""))
+
 
 class SearchOrderTest(unittest.TestCase):
     """Сортировка выдачи: по умолчанию релевантность, дата — по настройке.
