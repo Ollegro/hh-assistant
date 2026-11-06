@@ -70,12 +70,14 @@ DEFAULT_PROFILE = {
     "exclude_companies": [],
     "links": {
         "github": "https://github.com/Ollegro",
-        "site": "https://aquacleantech.ru",
-        "demo": "https://ollegro.github.io/room-planner-demo/",
         "telegram": "@lego_1",
         "email": "o.gutsev@mail.ru",
         "phone": "+7 903 841-70-00",
     },
+    # Подписи для письма: в теле остаются только ссылки на код и контакт.
+    # Сайт и демо в переписке с рекрутером не нужны — раньше модель вставляла
+    # их служебной строкой «site: …» / «demo: …» прямо в текст письма.
+    "letter_links": [("github", "GitHub"), ("telegram", "Telegram"), ("email", "Почта")],
     "facts": [
         "RAG-бот технической поддержки «Матвей» (AquaCleanTech, два канала входа: сайт aquacleantech.ru и мессенджер MAX): "
         "167 источников, 4293 чанка, FAISS, top_k = 6, ответы со ссылками, 828 автотестов, интерфейс на Next.js 15",

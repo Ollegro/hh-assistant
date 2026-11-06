@@ -27,6 +27,82 @@ class ValidateLetterTest(unittest.TestCase):
         self.assertEqual(letters.validate_letter("Здравствуйте!\n\n" + "Опыт с LLM и RAG. " * 40), [])
 
 
+class LetterLinksTest(unittest.TestCase):
+    """В письме не должно быть служебных строк «site: …» и «demo: …».
+
+    Владелец: «из текста письма надо убрать это — site: https://aquacleantech.ru
+    demo: https://ollegro.github.io/room-planner-demo/». Причина: промпт отдавал
+    модели весь словарь links служебными подписями, и она переносила их в письмо.
+    """
+
+    PROFILE = {
+        "name": "Олег",
+        "headline": "AI-инженер",
+        "salary_from": 180000, "salary_to": 250000,
+        "formats": ["удалённо", "гибрид"],
+        "facts": ["RAG-бот с 167 источниками и 828 автотестами"],
+        "gaps": [],
+        "links": {"github": "https://github.com/Ollegro",
+                  "site": "https://aquacleantech.ru",
+                  "demo": "https://ollegro.github.io/room-planner-demo/",
+                  "telegram": "@lego_1", "email": "o.gutsev@mail.ru",
+                  "phone": "+7 903 841-70-00"},
+    }
+
+    def vacancy(self):
+        return sample_vacancy(title="AI-инженер", company="Ромашка",
+                              description="RAG, LLM, автоматизация процессов")
+
+    def test_letter_links_drop_site_and_demo(self):
+        links = letters.letter_links(self.PROFILE)
+        keys = [key for key, _, _ in links]
+        self.assertIn("github", keys)
+        self.assertNotIn("site", keys)
+        self.assertNotIn("demo", keys)
+        self.assertNotIn("phone", keys)
+        self.assertIn(("github", "GitHub", "https://github.com/Ollegro"), links)
+
+    def test_offline_letter_has_no_service_lines(self):
+        text = letters.offline_letter(self.vacancy(), self.PROFILE)
+        self.assertNotIn("aquacleantech.ru", text)
+        self.assertNotIn("room-planner-demo", text)
+        self.assertNotIn("site:", text)
+        self.assertNotIn("demo:", text)
+        self.assertIn("GitHub: https://github.com/Ollegro", text)
+
+    def test_clean_service_lines_removes_prompt_labels(self):
+        dirty = ("Здравствуйте!\n\nТекст письма.\n\nsite: https://aquacleantech.ru\n"
+                 "demo: https://ollegro.github.io/room-planner-demo/\n\nОлег")
+        clean = letters.clean_service_lines(dirty)
+        self.assertNotIn("aquacleantech.ru", clean)
+        self.assertNotIn("room-planner-demo", clean)
+        self.assertIn("Текст письма.", clean)
+        self.assertIn("Олег", clean)
+        self.assertNotIn("\n\n\n", clean)
+
+    def test_clean_keeps_normal_links(self):
+        text = "Здравствуйте!\n\nGitHub: https://github.com/Ollegro\n\nОлег"
+        self.assertEqual(letters.clean_service_lines(text), text)
+
+    def test_prompt_lists_only_letter_links(self):
+        settings = SimpleNamespace(llm_api_key="k", llm_base_url="", llm_model="m",
+                                   llm_timeout=10, llm_retries=0, llm_json_mode=False)
+        captured = {}
+
+        def fake_chat(s, messages, temperature=0):
+            captured["prompt"] = messages[0]["content"]
+            return "Здравствуйте!"
+
+        with mock.patch.object(letters.llm, "is_enabled", lambda s: True), \
+                mock.patch.object(letters.llm, "chat", fake_chat):
+            letters.llm_letter(self.vacancy(), self.PROFILE, settings)
+        prompt = captured["prompt"]
+        self.assertIn("GitHub: https://github.com/Ollegro", prompt)
+        self.assertNotIn("aquacleantech.ru", prompt)
+        self.assertNotIn("room-planner-demo", prompt)
+        self.assertNotIn("site:", prompt)
+
+
 class OfflineLetterTest(unittest.TestCase):
     def test_structure(self):
         text = letters.offline_letter(sample_vacancy(), profile())

@@ -122,7 +122,7 @@ PROMPT = """Ты — кандидат и пишешь сопроводитель
 {facts}
 Чего у кандидата пока нет (упоминать только если это прямо требуется в вакансии, одной фразой):
 {gaps}
-Ссылки: {links}
+Ссылки (давать только те, что перечислены; подписи — обычными словами): {links}
 Ориентир по доходу: {salary_from}-{salary_to} ₽; формат: {formats}.
 
 Вакансия: {title} — {company}
@@ -141,7 +141,11 @@ PROMPT = """Ты — кандидат и пишешь сопроводитель
    «Держал 828 автотестов на ассистенте…». Своими словами повторяй формулировки вакансии.
 4. Одна фраза про формат и доход — спокойно, без слова «вилка» и без торговли.
 5. Закрытие: предложение обсудить задачи или показать код/демо + подпись именем;
-   ссылки отдельными строками в конце.
+   ссылки отдельными строками в конце — только из списка выше, с человеческими
+   подписями («GitHub: …», «Telegram: …»).
+
+Служебные подписи вроде «site», «demo», «phone», «website» (слово с двоеточием
+и ссылкой) писать нельзя — это формат промпта, а не текст письма.
 
 Тон:
 - по-человечески, тепло и по делу: короткие предложения, живой глагол, без канцелярита;
@@ -173,6 +177,52 @@ STRICT_SUFFIX = """
 
 
 
+def letter_links(profile):
+    """Ссылки, которые уместны в письме: (ключ, подпись, значение).
+
+    В профиле лежат все ссылки, включая сайт и демо, но в переписке с рекрутером
+    нужны только код и контакт. Порядок берётся из `letter_links`, значения —
+    из `links`; чего нет в профиле, то пропускается.
+    """
+    links = profile.get("links") or {}
+    pairs = profile.get("letter_links") or [("github", "GitHub"),
+                                            ("telegram", "Telegram"),
+                                            ("email", "Почта")]
+    out = []
+    for key, label in pairs:
+        value = links.get(key)
+        if value:
+            out.append((key, label, str(value).strip()))
+    return out
+
+
+# Служебные строки, которые модель иногда переносит из промпта в письмо:
+# «site: https://…», «demo: …», «phone: …». В живом письме их быть не должно.
+SERVICE_LINE = re.compile(
+    r"^\s*(site|demo|phone|сайт|демо|телефон|website)\s*:\s*\S+\s*$", re.I)
+
+
+def clean_service_lines(text):
+    """Убирает из письма строки вида «site: https://…» и пустые дубли подряд.
+
+    Если служебных строк нет, текст возвращается байт в байт: иначе срезанные
+    хвостовые пробелы ломают сравнения и ручную правку письма.
+    """
+    if not text:
+        return text
+    lines = text.splitlines()
+    if not any(SERVICE_LINE.match(line) for line in lines):
+        return text
+    kept = []
+    for line in lines:
+        if SERVICE_LINE.match(line):
+            continue
+        if not line.strip() and kept and not kept[-1].strip():
+            continue
+        kept.append(line.rstrip())
+    return "\n".join(kept).strip()
+
+
 def llm_letter(v, profile, settings=None, strict=False):
     """Письмо через LLM. None, если LLM не настроен или произошла ошибка.
 
@@ -185,7 +235,7 @@ def llm_letter(v, profile, settings=None, strict=False):
     salary = ""
     if v.get("salary_from") or v.get("salary_to"):
         salary = "%s-%s %s" % (v.get("salary_from") or "?", v.get("salary_to") or "?", v.get("currency") or "")
-    links = ", ".join("%s: %s" % (k, val) for k, val in (profile.get("links") or {}).items())
+    links = "; ".join("%s: %s" % (label, value) for _, label, value in letter_links(profile))
     prompt = PROMPT.format(
         headline=profile.get("headline", ""),
         salary_from=profile.get("salary_from"), salary_to=profile.get("salary_to"),
@@ -206,7 +256,9 @@ def llm_letter(v, profile, settings=None, strict=False):
         text = llm.chat(s, [{"role": "user", "content": prompt}], temperature=0.4)
     except llm.LLMError:
         return None
-    return text.strip() or None
+    # Модель иногда копирует служебные подписи промпта («site: …») в письмо.
+    text = clean_service_lines(text.strip())
+    return text or None
 
 
 def pick_facts(v, profile, limit=4):
@@ -248,7 +300,6 @@ def offline_letter(v, profile):
     Никаких ярлыков «Что подтверждаю результатами», «Вилка:», «Чего пока не делал» —
     письмо должно читаться как написанное человеком (см. ROBOTIC_MARKERS).
     """
-    links = profile.get("links") or {}
     title = v.get("title", "")
     company = v.get("company", "")
     facts = pick_facts(v, profile)
@@ -276,17 +327,20 @@ def offline_letter(v, profile):
               % (_formats_text(profile), profile.get("salary_from", 0) // 1000,
                  profile.get("salary_to", 0) // 1000)]
 
-    for key, label in (("github", "GitHub"), ("site", "Сайт проекта"), ("demo", "Демо"),
-                       ("telegram", "Telegram"), ("email", "Почта")):
-        if links.get(key):
-            lines += ["%s: %s" % (label, links[key])]
+    for _, label, value in letter_links(profile):
+        lines += ["%s: %s" % (label, value)]
     lines += ["", "Если удобно — расскажу подробнее на коротком созвоне или покажу код.",
               "", profile.get("name", "")]
     return "\n".join(lines)
 
 
 def validate_letter(text):
-    """Проверка письма: длина, отсутствие Markdown, наличие приветствия."""
+    """Проверка письма: длина, отсутствие Markdown, наличие приветствия.
+
+    Служебные строки вроде «site: …» здесь не считаются ошибкой: их вычищает
+    `clean_service_lines` при сборке, а падение в офлайн из-за одной подписи
+    было бы слишком строгим.
+    """
     body = (text or "").strip()
     problems = []
     if "**" in body or re.search(r"^#", body, re.M):
@@ -324,6 +378,9 @@ def make_letter(v, profile, settings=None):
         retry = llm_letter(v, profile, s, strict=True)
         if retry and _letter_score(retry) <= _letter_score(best):
             best = retry
+    if best:
+        # На всякий случай ещё раз: модель могла вернуть служебные подписи промпта.
+        best = clean_service_lines(best)
     if not best or validate_letter(best) or len(robotic_markers(best)) >= 2:
         return offline_letter(v, profile), "offline"
     return best, model
