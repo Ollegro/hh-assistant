@@ -320,7 +320,14 @@ def verdict_badge(verdict):
 
 
 def parser_warning(conn, hours=24):
-    """Свежее предупреждение «парсер мог сломаться» (не старше hours) или ''."""
+    """Свежее предупреждение «парсер мог сломаться» (не старше hours) или ''.
+
+    Предупреждение гасится успешным сбором: если после подозрительного разбора был
+    HTML-сбор без замечаний, парсер жив, и плашка только пугает. Раньше она висела
+    24 часа независимо от того, что следующие прогоны были здоровыми (06.11.2026:
+    предупреждение от 14:06 висело вечером, хотя ручная проверка дала 0 пустых
+    заголовков на 6 вакансиях).
+    """
     from datetime import datetime
 
     event = storage.last_event(conn, "parser_suspect")
@@ -332,6 +339,10 @@ def parser_warning(conn, hours=24):
         return ""
     if (datetime.now() - when).total_seconds() > hours * 3600:
         return ""
+    later = storage.last_event(conn, "collect")
+    if later and (later["ts"] or "") > (event["ts"] or ""):
+        if (later["payload"].get("source") or "").startswith("html"):
+            return ""
     payload = event["payload"]
     quality = payload.get("quality") or {}
     return ("⚠ парсер мог сломаться (запрос «%s», состояние %s: заголовков пусто %s, "
