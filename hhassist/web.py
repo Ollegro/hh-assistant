@@ -448,11 +448,18 @@ def _action_form(action, label, css, region_value, hidden_filters, confirm=False
                 (" onclick=\"%s\"" % onclick) if onclick else "", label))
 
 
+# Синхронизация селектов с кнопками действий.
+# Регион и площадки живут в GET-форме, а кнопки действий — в отдельных POST-формах
+# со скрытыми полями. Без этой синхронизации кнопка отправляла то, что было в hidden
+# при отрисовке: сменил регион или площадки и нажал «Собрать вакансии» до перезагрузки
+# — уходило старое значение, и выбор «все площадки» откатывался на «только hh.ru».
 REGION_SYNC_JS = (
-    "<script>(function(){var s=document.getElementById('region-select');if(!s)return;"
+    "<script>(function(){"
+    "function sync(srcId,dstName){var s=document.getElementById(srcId);if(!s)return;"
     "var forms=document.querySelectorAll('form.action-form');"
     "for(var i=0;i<forms.length;i++){(function(f){f.addEventListener('submit',function(){"
-    "var h=f.querySelector(\"input[name='region']\");if(h){h.value=s.value;}});})(forms[i]);}"
+    "var h=f.querySelector(\"input[name='\"+dstName+\"']\");if(h){h.value=s.value;}});})(forms[i]);}}"
+    "sync('region-select','region');sync('sources-select','sources');"
     "})();</script>")
 
 
@@ -521,8 +528,13 @@ def render_index(conn, limit, msg="", region="", filters=None, page=1, sources="
     rows = matching_rows[(page - 1) * limit:page * limit]
     hidden_filters = "".join("<input type='hidden' name='f_%s' value='%s'>" % (col, esc(v))
                              for col, values in filters.items() for v in values)
-    # выбор площадок едет вместе с кнопками действий, как и регион
-    hidden_filters += "<input type='hidden' name='sources' value='%s'>" % esc(sources_value)
+    # Выбор площадок едет вместе с кнопками действий (POST-формы), но НЕ с GET-формой
+    # селектов: там уже есть <select name='sources'>, и скрытое поле с тем же именем
+    # давало два значения в запросе. Сервер брал первое — старое, — поэтому выбор
+    # «все площадки» откатывался на «только hh.ru» (проверено 20.11.2026).
+    hidden_for_buttons = (hidden_filters +
+                          "<input type='hidden' name='sources' value='%s'>"
+                          % esc(sources_value))
     st = storage.stats(conn)
     left = queue.can_send_today(conn, get_settings().daily_limit)
     # Селект региона — в GET-форме (он же фильтр списка), кнопки действий —
@@ -541,8 +553,8 @@ def render_index(conn, limit, msg="", region="", filters=None, page=1, sources="
         "</select></form>",
         "<span class='buttons'>",
         _action_form("/run/collect", "Собрать вакансии", " primary",
-                     region_value, hidden_filters),
-        _action_form("/run/score", "Оценить", "", region_value, hidden_filters),
+                     region_value, hidden_for_buttons),
+        _action_form("/run/score", "Оценить", "", region_value, hidden_for_buttons),
         # Массовой генерации писем больше нет: каждый вызов LLM тратит токены,
         # а письмо нужно только там, где человек уже решил откликаться.
         # Кнопка «Сгенерировать письмо» живёт в карточке вакансии.
@@ -550,7 +562,7 @@ def render_index(conn, limit, msg="", region="", filters=None, page=1, sources="
         "<a class='btn success' href='/help'>Руководство</a>",
         "<a class='btn danger' href='/profile'>Профиль соискателя</a>",
         _action_form("/reset", "Очистить базу", " danger", region_value,
-                     hidden_filters, confirm=True, title=confirm_text,
+                     hidden_for_buttons, confirm=True, title=confirm_text,
                      onclick="return confirm('%s');" % confirm_text),
         "</span></div>",
     ])
