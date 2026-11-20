@@ -10,6 +10,7 @@ import json
 import os
 
 from . import collector, letters as letters_mod, matching, scoring, storage
+from . import collection_filter
 
 # Коммит пачками: одна транзакция на весь прогон держала блокировку записи всё
 # время работы LLM (минуты), и параллельный запрос падал с «database is locked».
@@ -66,6 +67,10 @@ def collect_queries(conn, queries, settings, limit=None, pages=None, on_item=Non
     picked = list(dict.fromkeys(picked)) or ["hh"]
     # инкрементальный сбор: недавно виденные вакансии повторно не скачиваем
     known = storage.seen_index(conn) if refresh_days else {}
+    # что уже отработано: отклики и пропуски. Считаем один раз на прогон —
+    # список меняется только нашими же действиями, а не во время сбора.
+    closed = collection_filter.closed_ids(conn)
+    filters = collection_filter.FilterStats()
     saved = found = skipped = duplicates = 0
     source = "html"
     notes = []
@@ -111,6 +116,8 @@ def collect_queries(conn, queries, settings, limit=None, pages=None, on_item=Non
                     break
                 if total_limit and saved >= total_limit:
                     break
+                if collection_filter.reject(v, closed=closed, stats=filters):
+                    continue
                 if storage.find_duplicate(conn, v):
                     duplicates += 1
                     continue
@@ -129,6 +136,9 @@ def collect_queries(conn, queries, settings, limit=None, pages=None, on_item=Non
         notes.append("уже в базе, повторно не скачивали: %d" % skipped)
     if duplicates:
         notes.append("похожие вакансии с других площадок: %d (в базу не писали)" % duplicates)
+    filter_note = filters.note()
+    if filter_note:
+        notes.append(filter_note)
     unique = len(saved_ids)
     if unique and unique != saved:
         # Одна вакансия может прийти по двум запросам: записей больше, чем вакансий.

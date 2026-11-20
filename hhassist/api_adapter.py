@@ -156,6 +156,9 @@ def vacancy_from_api(item):
         "area_id": area_id,
         "region": region,
         "source": "api",
+        # hh отдаёт флаг архива в выдаче API: по нему сбор отбрасывает закрытые
+        # вакансии (проверено 20.11.2026 — поле есть у всех вакансий списка)
+        "archived": bool(item.get("archived")),
     }
 
 
