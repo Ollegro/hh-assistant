@@ -73,6 +73,7 @@ def collect_queries(conn, queries, settings, limit=None, pages=None, on_item=Non
     filters = collection_filter.FilterStats()
     saved = found = skipped = duplicates = 0
     source = "html"
+    data_sources = []          # откуда реально пришли данные: api, html, habr, trudvsem…
     notes = []
     saved_ids = set()
     stopped = False
@@ -98,6 +99,8 @@ def collect_queries(conn, queries, settings, limit=None, pages=None, on_item=Non
                                   {"query": query, "source": name, "error": str(exc)})
                 continue
             source = info["source"]
+            if info["source"] not in data_sources:
+                data_sources.append(info["source"])
             found += info.get("found", 0)
             skipped += info.get("skipped", 0)
             if info["fallback"]:
@@ -147,7 +150,10 @@ def collect_queries(conn, queries, settings, limit=None, pages=None, on_item=Non
     if stopped:
         notes.insert(0, "остановлено пользователем: сохранено %d из %d найденных"
                         % (saved, found))
-    return saved, found, ",".join(picked), notes
+    # В отчёт уходит реальный источник данных (api, html, habr, trudvsem), а не имя
+    # площадки: раньше здесь было «hh», и нельзя было понять, идёт ли сбор через
+    # API hh или HTML-парсером.
+    return saved, found, ",".join(data_sources) or source, notes
 
 
 def score_pending(conn, settings, force=False, on_item=None, should_stop=None):

@@ -88,8 +88,10 @@ class CollectActionTest(WebBase):
                    "AI агенты разработчик"]
         report, calls = self.run_collect(queries)
         self.assertEqual([c["query"] for c in calls], queries)
+        # «источник: html» — из заглушки этого теста (она эмулирует HTML-парсер);
+        # раньше печаталось имя площадки «hh», и нельзя было отличить API от HTML.
         self.assertEqual(report, "собрано вакансий: 5 из 250 найденных "
-                                 "(источник: hh, запросов: 5, лимит: 20 на запрос, "
+                                 "(источник: html, запросов: 5, лимит: 20 на запрос, "
                                  "всего до 200, регион: вся Россия)")
 
     def test_region_from_form_goes_to_collector(self):

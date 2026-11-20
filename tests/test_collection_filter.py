@@ -110,7 +110,7 @@ class CollectSkipsTest(WebBase):
             saved, found, source, notes = jobs.collect_queries(
                 self.conn, ["AI-инженер"], settings, limit=10, pages=1,
                 sources=("hh",))
-        return saved, notes
+        return saved, notes, source
 
     def setUp(self):
         super().setUp()
@@ -122,7 +122,7 @@ class CollectSkipsTest(WebBase):
         live = sample_vacancy(id="111")
         dead = sample_vacancy(id="222")
         dead["archived"] = True
-        saved, notes = self.run_collect([live, dead])
+        saved, notes, _source = self.run_collect([live, dead])
         self.assertEqual(saved, 1)
         rows = [row[0] for row in self.conn.execute("SELECT id FROM vacancies")]
         self.assertEqual(rows, ["111"])
@@ -130,19 +130,24 @@ class CollectSkipsTest(WebBase):
 
     def test_applied_not_saved(self):
         storage.add_application(self.conn, "333", status=storage.STATUS_SENT, note="")
-        saved, notes = self.run_collect([sample_vacancy(id="333")])
+        saved, notes, _source = self.run_collect([sample_vacancy(id="333")])
         self.assertEqual(saved, 0)
         self.assertTrue(any("уже откликался: 1" in note for note in notes))
 
     def test_skipped_not_saved(self):
         storage.add_application(self.conn, "444", status=storage.STATUS_SKIPPED, note="")
-        saved, _notes = self.run_collect([sample_vacancy(id="444")])
+        saved, _notes, _source = self.run_collect([sample_vacancy(id="444")])
         self.assertEqual(saved, 0)
 
     def test_new_vacancy_saved(self):
-        saved, notes = self.run_collect([sample_vacancy(id="555")])
+        saved, notes, _source = self.run_collect([sample_vacancy(id="555")])
         self.assertEqual(saved, 1)
         self.assertFalse(any("не взяли" in note for note in notes))
+
+    def test_report_names_real_source_not_platform(self):
+        """В отчёте должен быть api/html, а не имя площадки «hh»."""
+        _saved, _notes, source = self.run_collect([sample_vacancy(id="666")])
+        self.assertEqual(source, "api")
 
 
 if __name__ == "__main__":
