@@ -56,7 +56,14 @@ def sitemap(force=False):
 
 
 def vacancy_urls(force=False):
-    """Адреса карточек вакансий из sitemap (страницы-фильтры отбрасываем)."""
+    """Адреса карточек вакансий из sitemap (страницы-фильтры отбрасываем).
+
+    Раньше тело этой функции оказалось случайно «приклеено» в конец `search()`
+    (после `return`), поэтому функция возвращала None, а `search` падал с
+    `TypeError: 'NoneType' object is not iterable`. Проверено на проде 20.11.2026.
+    """
+    locs = re.findall(r"<loc>([^<]+)</loc>", sitemap(force=force))
+    return [url for url in locs if re.search(r"/vacancies/\d+-", url)]
 
 
 def _experience(text):
@@ -146,9 +153,6 @@ def search(query, area="", pages=1, per_page=50, pause=1.0, remote=False):
         if pause:
             time.sleep(pause)
     return result
-
-    locs = re.findall(r"<loc>([^<]+)</loc>", sitemap(force=force))
-    return [url for url in locs if re.search(r"/vacancies/\d+-", url)]
 
 
 def _plain(html_text):

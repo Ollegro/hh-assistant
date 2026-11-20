@@ -83,18 +83,34 @@ def vacancy_from_item(item):
     )
 
 
-def search(query, area="", pages=1, per_page=50, pause=1.0, remote=False):
-    """Поиск вакансий. area — id региона hh (для фильтра по названию субъекта)."""
+def _region_filter(area):
+    """Названия регионов для фильтра, либо [] — если фильтровать не нужно.
+
+    «Вся Россия» приходит от hh как id 113. У площадок такого понятия нет, а
+    сравнение с названием «Россия» не совпадает ни с одним субъектом — из-за этого
+    «Работа России» молча отбрасывала все вакансии при area=[113] (проверено
+    20.11.2026: API отдавал 362 вакансии, в приложение приходило 0).
+    Конкретный регион (например 2019, Московская область) фильтруем как раньше.
+    """
     from .. import areas as areas_mod
 
-    region_names = []
+    names = []
     for area_id in (area if isinstance(area, (list, tuple)) else [area]):
         try:
             name = areas_mod.name_of(int(area_id))
         except (TypeError, ValueError):
-            name = ""
-        if name:
-            region_names.append(name.lower())
+            continue
+        if not name:
+            continue
+        if name.strip().lower() in ("россия", "вся россия"):
+            return []          # «вся Россия» = не фильтруем вовсе
+        names.append(name.lower())
+    return names
+
+
+def search(query, area="", pages=1, per_page=50, pause=1.0, remote=False):
+    """Поиск вакансий. area — id региона hh; «вся Россия» регион не ограничивает."""
+    region_names = _region_filter(area)
 
     limit = max(1, min(int(per_page or 50), MAX_PER_PAGE))
     wanted = limit
